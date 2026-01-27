@@ -1,0 +1,48 @@
+# clifi default configuration
+
+# Default chain to use
+chain: ethereum
+
+# LLM configuration
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  # API key should be set via ANTHROPIC_API_KEY environment variable
+
+# Safety settings
+safety:
+  # Require confirmation for all state-changing operations
+  confirm_all: true
+
+  # Maximum slippage percentage for swaps
+  max_slippage: 1.0
+
+  # Daily spend limits per chain (in native token units)
+  # Set to 0 for no limit
+  daily_limits:
+    ethereum: 0.1
+    base: 0.5
+    arbitrum: 0.5
+    optimism: 0.5
+    polygon: 100
+
+  # Contracts to never interact with (blocklist)
+  blocked_contracts: []
+
+  # Only interact with these contracts if set (allowlist)
+  allowed_contracts: []
+
+# Chain RPC overrides (uses defaults if not specified)
+chains:
+  # Example: override Ethereum RPC
+  # ethereum:
+  #   rpc_urls:
+  #     - https://your-rpc-url.com
+
+# Receipt storage
+receipts:
+  # Path to SQLite database (relative to data directory)
+  database: receipts.db
+
+  # Keep receipts for this many days (0 = forever)
+  retention_days: 0

@@ -1,0 +1,295 @@
+package llm
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	openai "github.com/sashabaranov/go-openai"
+)
+
+// OpenAIProvider implements the Provider interface for OpenAI
+type OpenAIProvider struct {
+	client  *openai.Client
+	model   string
+	baseURL string
+}
+
+// OpenAIModels lists available OpenAI models
+var OpenAIModels = []Model{
+	{
+		ID:            "gpt-4o",
+		Name:          "GPT-4o",
+		ContextWindow: 128000,
+		InputCost:     2.50,
+		OutputCost:    10.0,
+		SupportsTools: true,
+	},
+	{
+		ID:            "gpt-4o-mini",
+		Name:          "GPT-4o Mini",
+		ContextWindow: 128000,
+		InputCost:     0.15,
+		OutputCost:    0.60,
+		SupportsTools: true,
+	},
+	{
+		ID:            "gpt-4-turbo",
+		Name:          "GPT-4 Turbo",
+		ContextWindow: 128000,
+		InputCost:     10.0,
+		OutputCost:    30.0,
+		SupportsTools: true,
+	},
+	{
+		ID:            "gpt-3.5-turbo",
+		Name:          "GPT-3.5 Turbo",
+		ContextWindow: 16385,
+		InputCost:     0.50,
+		OutputCost:    1.50,
+		SupportsTools: true,
+	},
+}
+
+// NewOpenAIProvider creates a new OpenAI provider
+func NewOpenAIProvider(apiKey string, model string, baseURL string) (*OpenAIProvider, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("API key is required")
+	}
+
+	config := openai.DefaultConfig(apiKey)
+	if baseURL != "" {
+		config.BaseURL = baseURL
+	}
+
+	client := openai.NewClientWithConfig(config)
+
+	if model == "" {
+		model = "gpt-4o"
+	}
+
+	return &OpenAIProvider{
+		client:  client,
+		model:   model,
+		baseURL: baseURL,
+	}, nil
+}
+
+// ID returns the provider identifier
+func (p *OpenAIProvider) ID() ProviderID {
+	return ProviderOpenAI
+}
+
+// Name returns the human-readable provider name
+func (p *OpenAIProvider) Name() string {
+	return "OpenAI"
+}
+
+// SupportsTools returns true - OpenAI supports function calling
+func (p *OpenAIProvider) SupportsTools() bool {
+	return true
+}
+
+// Models returns available models
+func (p *OpenAIProvider) Models() []Model {
+	return OpenAIModels
+}
+
+// DefaultModel returns the default model
+func (p *OpenAIProvider) DefaultModel() string {
+	return p.model
+}
+
+// Chat sends a message and returns the response
+func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
+
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
+
+	// Convert messages to OpenAI format
+	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
+
+	// Add system prompt as first message
+	if req.SystemPrompt != "" {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: req.SystemPrompt,
+		})
+	}
+
+	for _, msg := range req.Messages {
+		role := openai.ChatMessageRoleUser
+		if msg.Role == "assistant" {
+			role = openai.ChatMessageRoleAssistant
+		}
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    role,
+			Content: msg.Content,
+		})
+	}
+
+	// Convert tools to OpenAI format
+	var tools []openai.Tool
+	for _, tool := range req.Tools {
+		var params map[string]interface{}
+		_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
+
+		tools = append(tools, openai.Tool{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  params,
+			},
+		})
+	}
+
+	openaiReq := openai.ChatCompletionRequest{
+		Model:     model,
+		MaxTokens: maxTokens,
+		Messages:  messages,
+	}
+
+	if len(tools) > 0 {
+		openaiReq.Tools = tools
+	}
+
+	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chat completion: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := resp.Choices[0]
+	response := &ChatResponse{
+		Content:    choice.Message.Content,
+		StopReason: string(choice.FinishReason),
+		Usage: Usage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
+
+	// Parse tool calls
+	for _, tc := range choice.Message.ToolCalls {
+		if tc.Type == openai.ToolTypeFunction {
+			response.ToolCalls = append(response.ToolCalls, ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: json.RawMessage(tc.Function.Arguments),
+			})
+		}
+	}
+
+	return response, nil
+}
+
+// ChatWithToolResults continues a conversation with tool results
+func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
+
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
+
+	// Build messages including tool results
+	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+len(toolResults)+1)
+
+	// Add system prompt
+	if req.SystemPrompt != "" {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: req.SystemPrompt,
+		})
+	}
+
+	for _, msg := range req.Messages {
+		role := openai.ChatMessageRoleUser
+		if msg.Role == "assistant" {
+			role = openai.ChatMessageRoleAssistant
+		}
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    role,
+			Content: msg.Content,
+		})
+	}
+
+	// Add tool results
+	for _, result := range toolResults {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:       openai.ChatMessageRoleTool,
+			Content:    result.Content,
+			ToolCallID: result.ToolUseID,
+		})
+	}
+
+	// Convert tools to OpenAI format
+	var tools []openai.Tool
+	for _, tool := range req.Tools {
+		var params map[string]interface{}
+		_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
+
+		tools = append(tools, openai.Tool{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  params,
+			},
+		})
+	}
+
+	openaiReq := openai.ChatCompletionRequest{
+		Model:     model,
+		MaxTokens: maxTokens,
+		Messages:  messages,
+	}
+
+	if len(tools) > 0 {
+		openaiReq.Tools = tools
+	}
+
+	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chat completion: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := resp.Choices[0]
+	response := &ChatResponse{
+		Content:    choice.Message.Content,
+		StopReason: string(choice.FinishReason),
+		Usage: Usage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
+
+	for _, tc := range choice.Message.ToolCalls {
+		if tc.Type == openai.ToolTypeFunction {
+			response.ToolCalls = append(response.ToolCalls, ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: json.RawMessage(tc.Function.Arguments),
+			})
+		}
+	}
+
+	return response, nil
+}
