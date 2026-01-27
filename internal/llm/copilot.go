@@ -74,6 +74,15 @@ func (p *CopilotProvider) Models() []Model {
 	return CopilotModels
 }
 
+// SetModel switches the active model after validating against Copilot's model list
+func (p *CopilotProvider) SetModel(modelID string) error {
+	if err := ValidateModelID(modelID, p.Models()); err != nil {
+		return err
+	}
+	p.OpenAIProvider.model = modelID
+	return nil
+}
+
 // Chat delegates to OpenAIProvider
 func (p *CopilotProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	return p.OpenAIProvider.Chat(ctx, req)

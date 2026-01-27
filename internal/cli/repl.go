@@ -121,6 +121,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Handle commands
 			if strings.HasPrefix(input, "/") {
+				m.textarea.Reset()
 				return m.handleCommand(input)
 			}
 
@@ -216,7 +217,7 @@ func (m model) View() string {
 	b.WriteString("\n")
 
 	// Help
-	help := helpStyle.Render("  /help • /clear • /quit • Ctrl+C to exit")
+	help := helpStyle.Render("  /help • /model • /clear • /quit • Ctrl+C to exit")
 	b.WriteString(help)
 
 	return b.String()
@@ -247,8 +248,14 @@ func (m *model) updateViewport() {
 }
 
 // handleCommand handles slash commands
-func (m model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
-	cmd = strings.ToLower(strings.TrimSpace(cmd))
+func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
+	input = strings.TrimSpace(input)
+	parts := strings.SplitN(input, " ", 2)
+	cmd := strings.ToLower(parts[0])
+	arg := ""
+	if len(parts) > 1 {
+		arg = strings.TrimSpace(parts[1])
+	}
 
 	switch cmd {
 	case "/quit", "/exit", "/q":
@@ -269,11 +276,16 @@ func (m model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case "/model":
+		return m.handleModelCommand(arg)
+
 	case "/help", "/?":
 		helpText := `Available commands:
-  /help, /?     - Show this help
-  /clear        - Clear chat history
-  /quit, /exit  - Exit clifi
+  /help, /?       - Show this help
+  /model          - List available models
+  /model <id>     - Switch to a different model
+  /clear          - Clear chat history
+  /quit, /exit    - Exit clifi
 
 Example queries:
   "What's my portfolio?"
@@ -298,6 +310,69 @@ Example queries:
 		m.updateViewport()
 		return m, nil
 	}
+}
+
+// handleModelCommand lists models or switches to a new one
+func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
+	if m.agent == nil {
+		m.messages = append(m.messages, chatMessage{
+			role:    "error",
+			content: "Agent not initialized.",
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	// No argument: list available models
+	if modelID == "" {
+		current := m.agent.CurrentModel()
+		models := m.agent.ListModels()
+		provider := m.agent.ProviderName()
+
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Models for %s:\n", provider))
+		for _, md := range models {
+			marker := "  "
+			if md.ID == current {
+				marker = "▸ "
+			}
+			toolTag := ""
+			if !md.SupportsTools {
+				toolTag = " (no tool support)"
+			}
+			b.WriteString(fmt.Sprintf("  %s%-30s %s%s\n", marker, md.ID, md.Name, toolTag))
+		}
+		b.WriteString(fmt.Sprintf("\nActive: %s", current))
+		b.WriteString("\nUsage: /model <id>")
+
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: b.String(),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	// Switch model
+	if err := m.agent.SetModel(modelID); err != nil {
+		m.messages = append(m.messages, chatMessage{
+			role:    "error",
+			content: fmt.Sprintf("Failed to switch model: %v", err),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	m.messages = append(m.messages, chatMessage{
+		role:    "system",
+		content: fmt.Sprintf("Switched to %s. Conversation history cleared.", modelID),
+		time:    time.Now(),
+	})
+	m.updateViewport()
+	return m, nil
 }
 
 // sendToAgent sends a message to the agent and returns a command

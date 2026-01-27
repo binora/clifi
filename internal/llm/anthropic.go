@@ -92,6 +92,15 @@ func (p *AnthropicProvider) DefaultModel() string {
 	return p.model
 }
 
+// SetModel switches the active model after validating the ID
+func (p *AnthropicProvider) SetModel(modelID string) error {
+	if err := ValidateModelID(modelID, p.Models()); err != nil {
+		return err
+	}
+	p.model = modelID
+	return nil
+}
+
 // Chat sends a message and returns the response
 func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	model := req.Model

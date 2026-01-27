@@ -98,6 +98,15 @@ func (p *OpenRouterProvider) Models() []Model {
 	return OpenRouterModels
 }
 
+// SetModel switches the active model after validating against OpenRouter's model list
+func (p *OpenRouterProvider) SetModel(modelID string) error {
+	if err := ValidateModelID(modelID, p.Models()); err != nil {
+		return err
+	}
+	p.OpenAIProvider.model = modelID
+	return nil
+}
+
 // Chat delegates to OpenAIProvider
 func (p *OpenRouterProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	return p.OpenAIProvider.Chat(ctx, req)

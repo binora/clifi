@@ -237,6 +237,34 @@ func (a *Agent) GetProvider() llm.Provider {
 	return a.provider
 }
 
+// SetModel switches the active model on the current provider.
+// Clears conversation history since prior messages may be incompatible.
+func (a *Agent) SetModel(modelID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if err := a.provider.SetModel(modelID); err != nil {
+		return err
+	}
+	a.conversation = make([]llm.Message, 0)
+	return nil
+}
+
+// CurrentModel returns the active model ID for the current provider.
+func (a *Agent) CurrentModel() string {
+	return a.provider.DefaultModel()
+}
+
+// ListModels returns the available models for the current provider.
+func (a *Agent) ListModels() []llm.Model {
+	return a.provider.Models()
+}
+
+// ProviderName returns the human-readable name of the current provider.
+func (a *Agent) ProviderName() string {
+	return a.provider.Name()
+}
+
 // Reset clears the conversation history. Safe to call concurrently with Chat().
 func (a *Agent) Reset() {
 	a.mu.Lock()

@@ -38,6 +38,10 @@ type Provider interface {
 
 	// DefaultModel returns the default model for this provider
 	DefaultModel() string
+
+	// SetModel switches the active model. Returns error if model ID is not
+	// in the provider's supported model list.
+	SetModel(modelID string) error
 }
 
 // Model represents an available model
@@ -213,6 +217,16 @@ func AllProviderIDs() []ProviderID {
 		ProviderGemini,
 		ProviderVenice,
 	}
+}
+
+// ValidateModelID checks whether modelID exists in the given model list.
+func ValidateModelID(modelID string, models []Model) error {
+	for _, m := range models {
+		if m.ID == modelID {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown model %q for this provider", modelID)
 }
 
 // Note: Tool, ToolResult, ToolHandler types are defined in tools.go
