@@ -130,6 +130,7 @@ func NewWizard(dataDir string) *WizardModel {
 
 	// API key input
 	apiInput := textinput.New()
+	apiInput.Prompt = ""
 	apiInput.Placeholder = "Paste your API key here..."
 	apiInput.EchoMode = textinput.EchoPassword
 	apiInput.EchoCharacter = '•'
@@ -138,6 +139,7 @@ func NewWizard(dataDir string) *WizardModel {
 
 	// Password inputs
 	passInput := textinput.New()
+	passInput.Prompt = ""
 	passInput.Placeholder = "Enter password (8+ chars)"
 	passInput.EchoMode = textinput.EchoPassword
 	passInput.EchoCharacter = '•'
@@ -145,6 +147,7 @@ func NewWizard(dataDir string) *WizardModel {
 	passInput.Width = 40
 
 	confirmInput := textinput.New()
+	confirmInput.Prompt = ""
 	confirmInput.Placeholder = "Confirm password"
 	confirmInput.EchoMode = textinput.EchoPassword
 	confirmInput.EchoCharacter = '•'
@@ -269,7 +272,10 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWalletChoice(msg)
 
 		case StepWalletPassword:
-			return m.updateWalletPassword(msg)
+			if msg.Type == tea.KeyEnter {
+				return m.updateWalletPassword(msg)
+			}
+			// Fall through to let input update happen
 
 		case StepComplete:
 			if msg.Type == tea.KeyEnter {
