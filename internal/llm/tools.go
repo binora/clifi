@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 )
 
@@ -9,6 +10,12 @@ type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// ToolResultsProvider is implemented by providers that support tool results.
+// All current providers implement this, allowing unified handling in the agent loop.
+type ToolResultsProvider interface {
+	ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error)
 }
 
 // ToolResult represents the result of a tool call

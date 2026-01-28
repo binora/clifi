@@ -7,82 +7,70 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yolodolo42/clifi/internal/agent"
+	"github.com/yolodolo42/clifi/internal/ui"
 )
 
-// Styles
-var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("205"))
+// replMode represents the current interaction mode
+type replMode int
 
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).
-			Bold(true)
-
-	assistantStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("35"))
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196"))
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+const (
+	modeChat replMode = iota
+	modeModelSelector
 )
 
 // chatMessage represents a message in the chat history
 type chatMessage struct {
-	role    string // "user", "assistant", "error", "system"
-	content string
-	time    time.Time
+	kind     string // "user", "tool_call", "tool_result", "assistant", "error", "system"
+	content  string
+	toolName string
+	toolArgs string
+	time     time.Time
 }
 
 // model represents the REPL state
 type model struct {
-	agent    *agent.Agent
-	textarea textarea.Model
-	viewport viewport.Model
-	messages []chatMessage
-	spinner  spinner.Model
-	loading  bool
-	width    int
-	height   int
-	ready    bool
-	quitting bool
+	agent         *agent.Agent
+	prompt        ui.Prompt
+	viewport      viewport.Model
+	messages      []chatMessage
+	spinner       spinner.Model
+	loading       bool
+	width         int
+	height        int
+	ready         bool
+	quitting      bool
+	mode          replMode
+	modelSelector ui.Selector
 }
 
 // responseMsg is sent when the agent responds
 type responseMsg struct {
-	content string
-	err     error
+	events []agent.ChatEvent
+	err    error
 }
 
 // initialModel creates the initial model state
 func initialModel(ag *agent.Agent) model {
-	ta := textarea.New()
-	ta.Placeholder = "Ask me anything about your crypto..."
-	ta.Focus()
-	ta.CharLimit = 500
-	ta.SetWidth(80)
-	ta.SetHeight(3)
-	ta.ShowLineNumbers = false
+	prompt := ui.NewPrompt()
+	prompt.Focus()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	sp.Style = lipgloss.NewStyle().Foreground(ui.ColorWarning)
 
 	return model{
-		agent:    ag,
-		textarea: ta,
-		spinner:  sp,
+		agent:   ag,
+		prompt:  prompt,
+		spinner: sp,
+		mode:    modeChat,
 		messages: []chatMessage{
 			{
-				role:    "system",
-				content: "Welcome to clifi! I'm your crypto operator agent.\nType your questions below. Use /help for commands, /quit to exit.",
+				kind:    "system",
+				content: "Welcome to clifi! Type your questions below. Use /help for commands.",
 				time:    time.Now(),
 			},
 		},
@@ -91,16 +79,18 @@ func initialModel(ag *agent.Agent) model {
 
 // Init initializes the model
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick)
+	return tea.Batch(m.prompt.Focus(), m.spinner.Tick)
 }
 
 // Update handles messages and updates state
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var (
-		tiCmd tea.Cmd
-		vpCmd tea.Cmd
-		spCmd tea.Cmd
-	)
+	var cmds []tea.Cmd
+
+	// Handle mode-specific updates
+	switch m.mode {
+	case modeModelSelector:
+		return m.updateModelSelector(msg)
+	}
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -114,26 +104,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			input := strings.TrimSpace(m.textarea.Value())
+			input := strings.TrimSpace(m.prompt.Value())
 			if input == "" {
 				return m, nil
 			}
 
 			// Handle commands
 			if strings.HasPrefix(input, "/") {
-				m.textarea.Reset()
+				m.prompt.Reset()
 				return m.handleCommand(input)
 			}
 
 			// Add user message
 			m.messages = append(m.messages, chatMessage{
-				role:    "user",
+				kind:    "user",
 				content: input,
 				time:    time.Now(),
 			})
 
 			// Clear input and start loading
-			m.textarea.Reset()
+			m.prompt.Reset()
 			m.loading = true
 			m.updateViewport()
 
@@ -146,43 +136,112 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-8)
+			m.viewport = viewport.New(msg.Width, msg.Height-6)
 			m.viewport.YPosition = 0
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 8
+			m.viewport.Height = msg.Height - 6
 		}
-		m.textarea.SetWidth(msg.Width - 4)
+		m.prompt.SetWidth(msg.Width - 2)
 		m.updateViewport()
 
 	case responseMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.messages = append(m.messages, chatMessage{
-				role:    "error",
+				kind:    "error",
 				content: msg.err.Error(),
 				time:    time.Now(),
 			})
 		} else {
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: msg.content,
-				time:    time.Now(),
-			})
+			// Add events as messages
+			for _, event := range msg.events {
+				switch event.Type {
+				case "tool_call":
+					m.messages = append(m.messages, chatMessage{
+						kind:     "tool_call",
+						toolName: event.Tool,
+						toolArgs: event.Args,
+						time:     time.Now(),
+					})
+				case "tool_result":
+					m.messages = append(m.messages, chatMessage{
+						kind:     "tool_result",
+						toolName: event.Tool,
+						content:  event.Content,
+						time:     time.Now(),
+					})
+				case "content":
+					m.messages = append(m.messages, chatMessage{
+						kind:    "assistant",
+						content: event.Content,
+						time:    time.Now(),
+					})
+				}
+			}
 		}
 		m.updateViewport()
 		m.viewport.GotoBottom()
 
 	case spinner.TickMsg:
-		m.spinner, spCmd = m.spinner.Update(msg)
-		return m, spCmd
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
-	m.textarea, tiCmd = m.textarea.Update(msg)
-	m.viewport, vpCmd = m.viewport.Update(msg)
+	// Update prompt
+	var promptCmd tea.Cmd
+	promptPtr, promptCmd := m.prompt.Update(msg)
+	m.prompt = *promptPtr
+	cmds = append(cmds, promptCmd)
 
-	return m, tea.Batch(tiCmd, vpCmd)
+	// Update viewport
+	var vpCmd tea.Cmd
+	m.viewport, vpCmd = m.viewport.Update(msg)
+	cmds = append(cmds, vpCmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+// updateModelSelector handles input in model selector mode
+func (m model) updateModelSelector(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		selectorPtr, _ := m.modelSelector.Update(msg)
+		m.modelSelector = *selectorPtr
+
+		if !m.modelSelector.Active() {
+			m.mode = modeChat
+			if !m.modelSelector.Cancelled() {
+				selected := m.modelSelector.Selected()
+				if selected != "" && selected != m.agent.CurrentModel() {
+					if err := m.agent.SetModel(selected); err != nil {
+						m.messages = append(m.messages, chatMessage{
+							kind:    "error",
+							content: fmt.Sprintf("Failed to switch model: %v", err),
+							time:    time.Now(),
+						})
+					} else {
+						m.messages = append(m.messages, chatMessage{
+							kind:    "system",
+							content: fmt.Sprintf("Switched to %s. Conversation cleared.", selected),
+							time:    time.Now(),
+						})
+					}
+				}
+			}
+			m.updateViewport()
+			return m, m.prompt.Focus()
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.modelSelector.SetWidth(msg.Width)
+	}
+
+	return m, nil
 }
 
 // View renders the UI
@@ -197,27 +256,29 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// Title
-	title := titleStyle.Render("  clifi - Crypto Operator Agent")
-	b.WriteString(title + "\n\n")
+	// Model selector mode
+	if m.mode == modeModelSelector {
+		b.WriteString("\n")
+		b.WriteString(m.modelSelector.View())
+		return b.String()
+	}
 
+	// Chat mode
 	// Messages viewport
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 
-	// Loading indicator or input
+	// Loading indicator
 	if m.loading {
-		b.WriteString(fmt.Sprintf("\n  %s Thinking...\n\n", m.spinner.View()))
-	} else {
-		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("  %s Thinking...\n", m.spinner.View()))
 	}
 
-	// Input area
-	b.WriteString(m.textarea.View())
+	// Input prompt
+	b.WriteString(m.prompt.View())
 	b.WriteString("\n")
 
-	// Help
-	help := helpStyle.Render("  /help • /model • /clear • /quit • Ctrl+C to exit")
+	// Help footer
+	help := ui.HelpStyle.Render("  /help • /model • /clear • /quit")
 	b.WriteString(help)
 
 	return b.String()
@@ -228,23 +289,70 @@ func (m *model) updateViewport() {
 	var content strings.Builder
 
 	for _, msg := range m.messages {
-		switch msg.role {
+		switch msg.kind {
 		case "user":
-			content.WriteString(userStyle.Render("You: "))
+			content.WriteString(ui.PromptStyle.Render(ui.SymbolPrompt))
+			content.WriteString(" ")
 			content.WriteString(msg.content)
+
+		case "tool_call":
+			content.WriteString(ui.ToolCallStyle.Render(ui.SymbolBullet))
+			content.WriteString(" ")
+			content.WriteString(ui.ToolCallStyle.Render(msg.toolName))
+			content.WriteString(ui.SelectorDim.Render("("))
+			args := summarizeArgs(msg.toolArgs, m.width-len(msg.toolName)-10)
+			content.WriteString(ui.SelectorDim.Render(args))
+			content.WriteString(ui.SelectorDim.Render(")"))
+
+		case "tool_result":
+			lines := strings.Split(msg.content, "\n")
+			for i, line := range lines {
+				if i == 0 {
+					content.WriteString("  ")
+					content.WriteString(ui.ToolResultStyle.Render(ui.SymbolTree))
+					content.WriteString(" ")
+				} else {
+					content.WriteString("    ")
+				}
+				content.WriteString(ui.ToolResultStyle.Render(line))
+				if i < len(lines)-1 {
+					content.WriteString("\n")
+				}
+			}
+
 		case "assistant":
-			content.WriteString(assistantStyle.Render("clifi: "))
+			content.WriteString(ui.AssistantStyle.Render(ui.SymbolBullet))
+			content.WriteString(" ")
 			content.WriteString(msg.content)
+
 		case "error":
-			content.WriteString(errorStyle.Render("Error: "))
+			content.WriteString(ui.ErrorStyle.Render(ui.SymbolBullet))
+			content.WriteString(" ")
+			content.WriteString(ui.ErrorStyle.Render("Error: "))
 			content.WriteString(msg.content)
+
 		case "system":
-			content.WriteString(helpStyle.Render(msg.content))
+			content.WriteString(ui.SystemStyle.Render(msg.content))
 		}
-		content.WriteString("\n\n")
+		content.WriteString("\n")
 	}
 
 	m.viewport.SetContent(content.String())
+}
+
+// summarizeArgs truncates tool args for display
+func summarizeArgs(args string, maxLen int) string {
+	if maxLen < 20 {
+		maxLen = 20
+	}
+	// Remove newlines and extra whitespace
+	args = strings.ReplaceAll(args, "\n", " ")
+	args = strings.Join(strings.Fields(args), " ")
+
+	if len(args) <= maxLen {
+		return args
+	}
+	return args[:maxLen-3] + "..."
 }
 
 // handleCommand handles slash commands
@@ -265,8 +373,8 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "/clear":
 		m.messages = []chatMessage{
 			{
-				role:    "system",
-				content: "Chat cleared. How can I help you?",
+				kind:    "system",
+				content: "Chat cleared.",
 				time:    time.Now(),
 			},
 		}
@@ -280,21 +388,15 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m.handleModelCommand(arg)
 
 	case "/help", "/?":
-		helpText := `Available commands:
-  /help, /?       - Show this help
-  /model          - List available models
-  /model <id>     - Switch to a different model
-  /clear          - Clear chat history
-  /quit, /exit    - Exit clifi
-
-Example queries:
-  "What's my portfolio?"
-  "Show my ETH balance on Base"
-  "What chains are supported?"
-  "List my wallets"`
+		helpText := `Commands:
+  /help       Show this help
+  /model      Select a model interactively
+  /model <id> Switch to a specific model
+  /clear      Clear chat history
+  /quit       Exit clifi`
 
 		m.messages = append(m.messages, chatMessage{
-			role:    "system",
+			kind:    "system",
 			content: helpText,
 			time:    time.Now(),
 		})
@@ -303,8 +405,8 @@ Example queries:
 
 	default:
 		m.messages = append(m.messages, chatMessage{
-			role:    "error",
-			content: fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd),
+			kind:    "error",
+			content: fmt.Sprintf("Unknown command: %s. Type /help for commands.", cmd),
 			time:    time.Now(),
 		})
 		m.updateViewport()
@@ -312,11 +414,11 @@ Example queries:
 	}
 }
 
-// handleModelCommand lists models or switches to a new one
+// handleModelCommand shows model selector or switches directly
 func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
 		m.messages = append(m.messages, chatMessage{
-			role:    "error",
+			kind:    "error",
 			content: "Agent not initialized.",
 			time:    time.Now(),
 		})
@@ -324,54 +426,47 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// No argument: list available models
-	if modelID == "" {
-		current := m.agent.CurrentModel()
-		models := m.agent.ListModels()
-		provider := m.agent.ProviderName()
-
-		var b strings.Builder
-		b.WriteString(fmt.Sprintf("Models for %s:\n", provider))
-		for _, md := range models {
-			marker := "  "
-			if md.ID == current {
-				marker = "▸ "
-			}
-			toolTag := ""
-			if !md.SupportsTools {
-				toolTag = " (no tool support)"
-			}
-			b.WriteString(fmt.Sprintf("  %s%-30s %s%s\n", marker, md.ID, md.Name, toolTag))
+	// Direct switch if model ID provided
+	if modelID != "" {
+		if err := m.agent.SetModel(modelID); err != nil {
+			m.messages = append(m.messages, chatMessage{
+				kind:    "error",
+				content: fmt.Sprintf("Failed to switch model: %v", err),
+				time:    time.Now(),
+			})
+			m.updateViewport()
+			return m, nil
 		}
-		b.WriteString(fmt.Sprintf("\nActive: %s", current))
-		b.WriteString("\nUsage: /model <id>")
 
 		m.messages = append(m.messages, chatMessage{
-			role:    "system",
-			content: b.String(),
+			kind:    "system",
+			content: fmt.Sprintf("Switched to %s. Conversation cleared.", modelID),
 			time:    time.Now(),
 		})
 		m.updateViewport()
 		return m, nil
 	}
 
-	// Switch model
-	if err := m.agent.SetModel(modelID); err != nil {
-		m.messages = append(m.messages, chatMessage{
-			role:    "error",
-			content: fmt.Sprintf("Failed to switch model: %v", err),
-			time:    time.Now(),
-		})
-		m.updateViewport()
-		return m, nil
+	// Interactive selector
+	current := m.agent.CurrentModel()
+	models := m.agent.ListModels()
+	provider := m.agent.ProviderName()
+
+	items := make([]ui.SelectorItem, len(models))
+	for i, md := range models {
+		items[i] = ui.SelectorItem{
+			ID:          md.ID,
+			Label:       md.ID,
+			Description: md.Name,
+			Current:     md.ID == current,
+		}
 	}
 
-	m.messages = append(m.messages, chatMessage{
-		role:    "system",
-		content: fmt.Sprintf("Switched to %s. Conversation history cleared.", modelID),
-		time:    time.Now(),
-	})
-	m.updateViewport()
+	m.modelSelector = ui.NewSelector(fmt.Sprintf("Select %s model", provider), items)
+	m.modelSelector.SetWidth(m.width)
+	m.mode = modeModelSelector
+	m.prompt.Blur()
+
 	return m, nil
 }
 
@@ -381,10 +476,10 @@ func (m model) sendToAgent(input string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		response, err := m.agent.Chat(ctx, input)
+		events, err := m.agent.ChatWithEvents(ctx, input)
 		return responseMsg{
-			content: response,
-			err:     err,
+			events: events,
+			err:    err,
 		}
 	}
 }
