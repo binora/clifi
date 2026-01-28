@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +15,21 @@ import (
 	"github.com/yolodolo42/clifi/internal/agent"
 	"github.com/yolodolo42/clifi/internal/ui"
 )
+
+// command defines a slash command with its description
+type command struct {
+	name        string
+	description string
+}
+
+// commands is the registry of available commands
+var commands = []command{
+	{"/help", "Show available commands"},
+	{"/model", "Select AI model interactively"},
+	{"/clear", "Clear chat history"},
+	{"/logout", "Clear credentials and exit"},
+	{"/quit", "Exit clifi"},
+}
 
 // replMode represents the current interaction mode
 type replMode int
@@ -44,7 +61,9 @@ type model struct {
 	ready         bool
 	quitting      bool
 	mode          replMode
-	modelSelector ui.Selector
+	modelSelector  ui.Selector
+	suggestions    []command
+	suggestionIdx  int
 }
 
 // responseMsg is sent when the agent responds
@@ -99,6 +118,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 
+		case tea.KeyUp:
+			if len(m.suggestions) > 0 && m.suggestionIdx > 0 {
+				m.suggestionIdx--
+				return m, nil
+			}
+
+		case tea.KeyDown:
+			if len(m.suggestions) > 0 && m.suggestionIdx < len(m.suggestions)-1 {
+				m.suggestionIdx++
+				return m, nil
+			}
+
+		case tea.KeyTab:
+			if m.suggestionIdx >= 0 && m.suggestionIdx < len(m.suggestions) {
+				m.prompt.SetValue(m.suggestions[m.suggestionIdx].name)
+				m.suggestions = nil
+				return m, nil
+			}
+
 		case tea.KeyEnter:
 			if m.loading {
 				return m, nil
@@ -112,6 +150,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle commands
 			if strings.HasPrefix(input, "/") {
 				m.prompt.Reset()
+				m.suggestions = nil
+				m.suggestionIdx = 0
 				return m.handleCommand(input)
 			}
 
@@ -124,6 +164,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Clear input and start loading
 			m.prompt.Reset()
+			m.suggestions = nil
 			m.loading = true
 			m.updateViewport()
 
@@ -135,13 +176,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+		suggestionsHeight := len(m.suggestions)
+		if suggestionsHeight > 6 {
+			suggestionsHeight = 6
+		}
+
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-6)
+			m.viewport = viewport.New(msg.Width, msg.Height-6-suggestionsHeight)
 			m.viewport.YPosition = 0
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 6
+			m.viewport.Height = msg.Height - 6 - suggestionsHeight
 		}
 		m.prompt.SetWidth(msg.Width - 2)
 		m.updateViewport()
@@ -155,7 +201,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				time:    time.Now(),
 			})
 		} else {
-			// Add events as messages
 			for _, event := range msg.events {
 				switch event.Type {
 				case "tool_call":
@@ -196,12 +241,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.prompt = *promptPtr
 	cmds = append(cmds, promptCmd)
 
+	// Update suggestions based on input
+	m.updateSuggestions()
+
 	// Update viewport
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	cmds = append(cmds, vpCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+// updateSuggestions filters commands based on current input
+func (m *model) updateSuggestions() {
+	input := m.prompt.Value()
+	if !strings.HasPrefix(input, "/") || strings.Contains(input, " ") {
+		m.suggestions = nil
+		m.suggestionIdx = 0
+		return
+	}
+
+	input = strings.ToLower(input)
+	var filtered []command
+	for _, cmd := range commands {
+		if strings.HasPrefix(cmd.name, input) {
+			filtered = append(filtered, cmd)
+		}
+	}
+
+	// Reset index if suggestions changed
+	if len(filtered) != len(m.suggestions) {
+		m.suggestionIdx = 0
+	}
+	m.suggestions = filtered
 }
 
 // updateModelSelector handles input in model selector mode
@@ -277,9 +349,20 @@ func (m model) View() string {
 	b.WriteString(m.prompt.View())
 	b.WriteString("\n")
 
-	// Help footer
-	help := ui.HelpStyle.Render("  /help • /model • /clear • /quit")
-	b.WriteString(help)
+	// Command suggestions (if typing a command)
+	if len(m.suggestions) > 0 {
+		for i, cmd := range m.suggestions {
+			prefix := "  "
+			nameStyle := ui.PromptStyle
+			if i == m.suggestionIdx {
+				prefix = ui.SelectorCursor.Render(ui.SymbolArrow) + " "
+				nameStyle = ui.SelectorActive
+			}
+			name := nameStyle.Render(fmt.Sprintf("%-18s", cmd.name))
+			desc := ui.SelectorDim.Render(cmd.description)
+			b.WriteString(prefix + name + desc + "\n")
+		}
+	}
 
 	return b.String()
 }
@@ -345,7 +428,6 @@ func summarizeArgs(args string, maxLen int) string {
 	if maxLen < 20 {
 		maxLen = 20
 	}
-	// Remove newlines and extra whitespace
 	args = strings.ReplaceAll(args, "\n", " ")
 	args = strings.Join(strings.Fields(args), " ")
 
@@ -370,6 +452,9 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 
+	case "/logout":
+		return m.handleLogout()
+
 	case "/clear":
 		m.messages = []chatMessage{
 			{
@@ -388,16 +473,15 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m.handleModelCommand(arg)
 
 	case "/help", "/?":
-		helpText := `Commands:
-  /help       Show this help
-  /model      Select a model interactively
-  /model <id> Switch to a specific model
-  /clear      Clear chat history
-  /quit       Exit clifi`
+		var helpText strings.Builder
+		helpText.WriteString("Commands:\n")
+		for _, cmd := range commands {
+			helpText.WriteString(fmt.Sprintf("  %-12s %s\n", cmd.name, cmd.description))
+		}
 
 		m.messages = append(m.messages, chatMessage{
 			kind:    "system",
-			content: helpText,
+			content: helpText.String(),
 			time:    time.Now(),
 		})
 		m.updateViewport()
@@ -414,6 +498,24 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleLogout clears credentials and exits
+func (m model) handleLogout() (tea.Model, tea.Cmd) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		authPath := filepath.Join(home, ".clifi", "auth.json")
+		_ = os.Remove(authPath)
+	}
+
+	m.messages = append(m.messages, chatMessage{
+		kind:    "system",
+		content: "Credentials cleared. Restart clifi to set up again.",
+		time:    time.Now(),
+	})
+	m.updateViewport()
+	m.quitting = true
+	return m, tea.Quit
+}
+
 // handleModelCommand shows model selector or switches directly
 func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
@@ -426,7 +528,6 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Direct switch if model ID provided
 	if modelID != "" {
 		if err := m.agent.SetModel(modelID); err != nil {
 			m.messages = append(m.messages, chatMessage{
@@ -447,7 +548,6 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Interactive selector
 	current := m.agent.CurrentModel()
 	models := m.agent.ListModels()
 	provider := m.agent.ProviderName()

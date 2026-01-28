@@ -15,6 +15,7 @@ type Prompt struct {
 // NewPrompt creates a new prompt component
 func NewPrompt() Prompt {
 	ti := textinput.New()
+	ti.Prompt = ""
 	ti.Placeholder = ""
 	ti.CharLimit = 2000
 	ti.Width = 80
