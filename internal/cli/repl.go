@@ -11,10 +11,20 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yolodolo42/clifi/internal/agent"
 	"github.com/yolodolo42/clifi/internal/ui"
 )
+
+var mdRenderer *glamour.TermRenderer
+
+func init() {
+	mdRenderer, _ = glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80),
+	)
+}
 
 // command defines a slash command with its description
 type command struct {
@@ -406,7 +416,16 @@ func (m *model) updateViewport() {
 		case "assistant":
 			content.WriteString(ui.AssistantStyle.Render(ui.SymbolBullet))
 			content.WriteString(" ")
-			content.WriteString(msg.content)
+			if mdRenderer != nil {
+				rendered, err := mdRenderer.Render(msg.content)
+				if err == nil {
+					content.WriteString(strings.TrimSpace(rendered))
+				} else {
+					content.WriteString(msg.content)
+				}
+			} else {
+				content.WriteString(msg.content)
+			}
 
 		case "error":
 			content.WriteString(ui.ErrorStyle.Render(ui.SymbolBullet))

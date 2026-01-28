@@ -256,7 +256,10 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAuthMethod(msg)
 
 		case StepProviderKey:
-			return m.updateProviderKey(msg)
+			if msg.Type == tea.KeyEnter {
+				return m.updateProviderKey(msg)
+			}
+			// Fall through to let input update happen
 
 		case StepOAuthWaiting:
 			// OAuth is in progress, just wait
