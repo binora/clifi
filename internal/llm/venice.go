@@ -87,7 +87,7 @@ func (p *VeniceProvider) SetModel(modelID string) error {
 	if err := ValidateModelID(modelID, p.Models()); err != nil {
 		return err
 	}
-	p.OpenAIProvider.model = modelID
+	p.model = modelID
 	return nil
 }
 

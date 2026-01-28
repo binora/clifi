@@ -26,11 +26,11 @@ func newTestProvider() *testProvider {
 	}
 }
 
-func (p *testProvider) ID() llm.ProviderID          { return "test" }
-func (p *testProvider) Name() string                 { return "Test Provider" }
-func (p *testProvider) SupportsTools() bool           { return true }
-func (p *testProvider) Models() []llm.Model           { return p.models }
-func (p *testProvider) DefaultModel() string          { return p.model }
+func (p *testProvider) ID() llm.ProviderID   { return "test" }
+func (p *testProvider) Name() string         { return "Test Provider" }
+func (p *testProvider) SupportsTools() bool  { return true }
+func (p *testProvider) Models() []llm.Model  { return p.models }
+func (p *testProvider) DefaultModel() string { return p.model }
 func (p *testProvider) Chat(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{Content: "ok"}, nil
 }
