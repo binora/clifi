@@ -4,7 +4,22 @@ on:
   push:
 
 jobs:
-  check:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clifi-linux-amd64
+          path: bin/clifi
+          retention-days: 7
+
+  lint:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -12,10 +27,13 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make lint
-      - run: make test
-      - run: make build
-      - uses: actions/upload-artifact@v4
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          name: clifi-linux-amd64
-          path: bin/clifi
-          retention-days: 7
+          go-version-file: go.mod
+      - run: make test
