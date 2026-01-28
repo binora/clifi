@@ -97,6 +97,6 @@ func (p *VeniceProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 }
 
 // ChatWithToolResults delegates to OpenAIProvider
-func (p *VeniceProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
-	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolResults)
+func (p *VeniceProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
+	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
 }

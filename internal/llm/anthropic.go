@@ -182,7 +182,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 }
 
 // ChatWithToolResults continues a conversation with tool results
-func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
+func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
 	model := req.Model
 	if model == "" {
 		model = p.model
@@ -206,6 +206,18 @@ func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRe
 			Content: []anthropic.MessageContent{
 				anthropic.NewTextMessageContent(msg.Content),
 			},
+		})
+	}
+
+	// Add assistant message with tool_use blocks (only if there are tool calls)
+	if len(toolCalls) > 0 {
+		var toolUseContents []anthropic.MessageContent
+		for _, tc := range toolCalls {
+			toolUseContents = append(toolUseContents, anthropic.NewToolUseMessageContent(tc.ID, tc.Name, tc.Input))
+		}
+		anthropicMessages = append(anthropicMessages, anthropic.Message{
+			Role:    anthropic.RoleAssistant,
+			Content: toolUseContents,
 		})
 	}
 

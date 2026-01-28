@@ -158,7 +158,7 @@ func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 }
 
 // ChatWithToolResults continues a conversation with tool results
-func (p *GeminiProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
+func (p *GeminiProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
 	modelName := req.Model
 	if modelName == "" {
 		modelName = p.model
@@ -199,6 +199,23 @@ func (p *GeminiProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 		contents = append(contents, &genai.Content{
 			Role:  role,
 			Parts: []genai.Part{genai.Text(msg.Content)},
+		})
+	}
+
+	// Add model message with function calls (only if there are tool calls)
+	if len(toolCalls) > 0 {
+		var functionCallParts []genai.Part
+		for _, tc := range toolCalls {
+			var args map[string]any
+			_ = json.Unmarshal(tc.Input, &args)
+			functionCallParts = append(functionCallParts, genai.FunctionCall{
+				Name: tc.Name,
+				Args: args,
+			})
+		}
+		contents = append(contents, &genai.Content{
+			Role:  "model",
+			Parts: functionCallParts,
 		})
 	}
 

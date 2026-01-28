@@ -89,8 +89,8 @@ func (p *CopilotProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResp
 }
 
 // ChatWithToolResults delegates to OpenAIProvider
-func (p *CopilotProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
-	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolResults)
+func (p *CopilotProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
+	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
 }
 
 // DeviceCodeResponse represents the response from GitHub's device code endpoint

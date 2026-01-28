@@ -15,7 +15,7 @@ type Tool struct {
 // ToolResultsProvider is implemented by providers that support tool results.
 // All current providers implement this, allowing unified handling in the agent loop.
 type ToolResultsProvider interface {
-	ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error)
+	ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error)
 }
 
 // ToolResult represents the result of a tool call

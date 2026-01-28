@@ -113,6 +113,6 @@ func (p *OpenRouterProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatR
 }
 
 // ChatWithToolResults delegates to OpenAIProvider
-func (p *OpenRouterProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
-	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolResults)
+func (p *OpenRouterProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
+	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
 }

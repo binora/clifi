@@ -203,7 +203,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 }
 
 // ChatWithToolResults continues a conversation with tool results
-func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolResults []ToolResult) (*ChatResponse, error) {
+func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
 	model := req.Model
 	if model == "" {
 		model = p.model
@@ -234,6 +234,24 @@ func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 			Role:    role,
 			Content: msg.Content,
 		})
+	}
+
+	// Add assistant message with tool_calls (only if there are tool calls)
+	if len(toolCalls) > 0 {
+		assistantMsg := openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleAssistant,
+		}
+		for _, tc := range toolCalls {
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, openai.ToolCall{
+				ID:   tc.ID,
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      tc.Name,
+					Arguments: string(tc.Input),
+				},
+			})
+		}
+		messages = append(messages, assistantMsg)
 	}
 
 	// Add tool results

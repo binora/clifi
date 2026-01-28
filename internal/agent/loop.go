@@ -158,48 +158,21 @@ func getProviderKey(authManager *auth.Manager, providerID llm.ProviderID) (strin
 	return authManager.GetAPIKey(providerID)
 }
 
-// Chat sends a user message and returns the agent's response
+// Chat sends a user message and returns the agent's response.
+// This is a thin wrapper around ChatWithEvents that discards event data.
 func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.provider == nil {
-		return "", fmt.Errorf("agent provider not initialized")
-	}
-
-	a.conversation = append(a.conversation, llm.Message{
-		Role:    "user",
-		Content: userMessage,
-	})
-
-	req := &llm.ChatRequest{
-		SystemPrompt: a.systemPrompt,
-		Messages:     a.conversation,
-		Tools:        a.toolRegistry.GetTools(),
-	}
-
-	response, err := a.provider.Chat(ctx, req)
+	events, err := a.ChatWithEvents(ctx, userMessage)
 	if err != nil {
-		return "", fmt.Errorf("failed to get response: %w", err)
+		return "", err
 	}
 
-	for len(response.ToolCalls) > 0 {
-		toolResults := a.executeToolCalls(ctx, response.ToolCalls)
-
-		response, err = a.continueWithToolResults(ctx, req, toolResults)
-		if err != nil {
-			return "", err
+	// Extract final content from events
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "content" {
+			return events[i].Content, nil
 		}
 	}
-
-	if response.Content != "" {
-		a.conversation = append(a.conversation, llm.Message{
-			Role:    "assistant",
-			Content: response.Content,
-		})
-	}
-
-	return response.Content, nil
+	return "", nil
 }
 
 // ChatWithEvents sends a user message and returns structured events for UI rendering.
@@ -231,10 +204,11 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 	}
 
 	for len(response.ToolCalls) > 0 {
-		toolResults, toolEvents := a.executeToolCallsWithEvents(ctx, response.ToolCalls)
+		toolCalls := response.ToolCalls
+		toolResults, toolEvents := a.executeToolCallsWithEvents(ctx, toolCalls)
 		events = append(events, toolEvents...)
 
-		response, err = a.continueWithToolResults(ctx, req, toolResults)
+		response, err = a.continueWithToolResults(ctx, req, toolCalls, toolResults)
 		if err != nil {
 			return nil, err
 		}
@@ -255,39 +229,18 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 	return events, nil
 }
 
-// executeToolCalls runs all tool calls and returns their results.
-func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []llm.ToolCall) []llm.ToolResult {
+// executeToolCallsInternal runs tool calls with optional event emission.
+func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.ToolCall, emitEvent func(ChatEvent)) []llm.ToolResult {
 	results := make([]llm.ToolResult, len(toolCalls))
+
 	for i, tc := range toolCalls {
-		result, err := a.toolRegistry.ExecuteTool(ctx, tc.Name, tc.Input)
-		if err != nil {
-			results[i] = llm.ToolResult{
-				ToolUseID: tc.ID,
-				Content:   fmt.Sprintf("Error: %v", err),
-				IsError:   true,
-			}
-		} else {
-			results[i] = llm.ToolResult{
-				ToolUseID: tc.ID,
-				Content:   result,
-				IsError:   false,
-			}
+		if emitEvent != nil {
+			emitEvent(ChatEvent{
+				Type: "tool_call",
+				Tool: tc.Name,
+				Args: string(tc.Input),
+			})
 		}
-	}
-	return results
-}
-
-// executeToolCallsWithEvents runs all tool calls and returns results with events for UI.
-func (a *Agent) executeToolCallsWithEvents(ctx context.Context, toolCalls []llm.ToolCall) ([]llm.ToolResult, []ChatEvent) {
-	results := make([]llm.ToolResult, len(toolCalls))
-	events := make([]ChatEvent, 0, len(toolCalls)*2)
-
-	for i, tc := range toolCalls {
-		events = append(events, ChatEvent{
-			Type: "tool_call",
-			Tool: tc.Name,
-			Args: string(tc.Input),
-		})
 
 		result, err := a.toolRegistry.ExecuteTool(ctx, tc.Name, tc.Input)
 		if err != nil {
@@ -297,36 +250,49 @@ func (a *Agent) executeToolCallsWithEvents(ctx context.Context, toolCalls []llm.
 				Content:   errContent,
 				IsError:   true,
 			}
-			events = append(events, ChatEvent{
-				Type:    "tool_result",
-				Tool:    tc.Name,
-				Content: errContent,
-				IsError: true,
-			})
+			if emitEvent != nil {
+				emitEvent(ChatEvent{
+					Type:    "tool_result",
+					Tool:    tc.Name,
+					Content: errContent,
+					IsError: true,
+				})
+			}
 		} else {
 			results[i] = llm.ToolResult{
 				ToolUseID: tc.ID,
 				Content:   result,
 				IsError:   false,
 			}
-			events = append(events, ChatEvent{
-				Type:    "tool_result",
-				Tool:    tc.Name,
-				Content: result,
-				IsError: false,
-			})
+			if emitEvent != nil {
+				emitEvent(ChatEvent{
+					Type:    "tool_result",
+					Tool:    tc.Name,
+					Content: result,
+					IsError: false,
+				})
+			}
 		}
 	}
+	return results
+}
+
+// executeToolCallsWithEvents runs all tool calls and returns results with events for UI.
+func (a *Agent) executeToolCallsWithEvents(ctx context.Context, toolCalls []llm.ToolCall) ([]llm.ToolResult, []ChatEvent) {
+	var events []ChatEvent
+	results := a.executeToolCallsInternal(ctx, toolCalls, func(e ChatEvent) {
+		events = append(events, e)
+	})
 	return results, events
 }
 
 // continueWithToolResults sends tool results to the provider and returns the next response.
-func (a *Agent) continueWithToolResults(ctx context.Context, req *llm.ChatRequest, toolResults []llm.ToolResult) (*llm.ChatResponse, error) {
+func (a *Agent) continueWithToolResults(ctx context.Context, req *llm.ChatRequest, toolCalls []llm.ToolCall, toolResults []llm.ToolResult) (*llm.ChatResponse, error) {
 	trp, ok := a.provider.(llm.ToolResultsProvider)
 	if !ok {
 		return nil, fmt.Errorf("provider does not support tool results")
 	}
-	response, err := trp.ChatWithToolResults(ctx, req, toolResults)
+	response, err := trp.ChatWithToolResults(ctx, req, toolCalls, toolResults)
 	if err != nil {
 		return nil, fmt.Errorf("failed to continue conversation: %w", err)
 	}
