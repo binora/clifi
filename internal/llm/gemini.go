@@ -89,6 +89,15 @@ func (p *GeminiProvider) DefaultModel() string {
 	return p.model
 }
 
+// SetModel switches the active model after validating the ID
+func (p *GeminiProvider) SetModel(modelID string) error {
+	if err := ValidateModelID(modelID, p.Models()); err != nil {
+		return err
+	}
+	p.model = modelID
+	return nil
+}
+
 // Chat sends a message and returns the response
 func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	modelName := req.Model

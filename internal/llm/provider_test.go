@@ -23,6 +23,9 @@ func (m *mockProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 func (m *mockProvider) SupportsTools() bool  { return m.supportsTools }
 func (m *mockProvider) Models() []Model      { return []Model{{ID: "mock-model", Name: "Mock Model"}} }
 func (m *mockProvider) DefaultModel() string { return "mock-model" }
+func (m *mockProvider) SetModel(modelID string) error {
+	return ValidateModelID(modelID, m.Models())
+}
 
 func TestNewProviderRegistry(t *testing.T) {
 	t.Run("creates empty registry", func(t *testing.T) {
@@ -282,5 +285,54 @@ func TestModel_Structure(t *testing.T) {
 		assert.Equal(t, "claude-3-opus", model.ID)
 		assert.Equal(t, 200000, model.ContextWindow)
 		assert.True(t, model.SupportsTools)
+	})
+}
+
+func TestValidateModelID(t *testing.T) {
+	models := []Model{
+		{ID: "model-a", Name: "Model A"},
+		{ID: "model-b", Name: "Model B"},
+	}
+
+	t.Run("valid model returns nil", func(t *testing.T) {
+		err := ValidateModelID("model-a", models)
+		assert.NoError(t, err)
+	})
+
+	t.Run("valid model second entry", func(t *testing.T) {
+		err := ValidateModelID("model-b", models)
+		assert.NoError(t, err)
+	})
+
+	t.Run("unknown model returns error", func(t *testing.T) {
+		err := ValidateModelID("nonexistent", models)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown model")
+		assert.Contains(t, err.Error(), "nonexistent")
+	})
+
+	t.Run("empty model ID returns error", func(t *testing.T) {
+		err := ValidateModelID("", models)
+		require.Error(t, err)
+	})
+
+	t.Run("empty model list returns error", func(t *testing.T) {
+		err := ValidateModelID("anything", nil)
+		require.Error(t, err)
+	})
+}
+
+func TestMockProvider_SetModel(t *testing.T) {
+	t.Run("accepts valid model", func(t *testing.T) {
+		p := &mockProvider{id: ProviderAnthropic, name: "Test"}
+		err := p.SetModel("mock-model")
+		assert.NoError(t, err)
+	})
+
+	t.Run("rejects invalid model", func(t *testing.T) {
+		p := &mockProvider{id: ProviderAnthropic, name: "Test"}
+		err := p.SetModel("nonexistent-model")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown model")
 	})
 }

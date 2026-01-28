@@ -100,6 +100,15 @@ func (p *OpenAIProvider) DefaultModel() string {
 	return p.model
 }
 
+// SetModel switches the active model after validating the ID
+func (p *OpenAIProvider) SetModel(modelID string) error {
+	if err := ValidateModelID(modelID, p.Models()); err != nil {
+		return err
+	}
+	p.model = modelID
+	return nil
+}
+
 // Chat sends a message and returns the response
 func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	model := req.Model
