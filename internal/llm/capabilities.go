@@ -27,17 +27,17 @@ var toolCapCache = &ToolCapabilitiesCache{
 // SupportsToolsForModel returns (supports, known) for a provider/model.
 // known==false means we could not determine and callers may choose to fallback.
 func SupportsToolsForModel(ctx context.Context, provider Provider, modelID string, openRouterAPIKey string) (bool, bool) {
+	// For OpenRouter, prefer live capability data so we don't rely on stale static lists.
+	if provider.ID() == ProviderOpenRouter {
+		if supports, known := toolCapCache.fetchOpenRouter(ctx, openRouterAPIKey, modelID); known {
+			return supports, true
+		}
+	}
+
 	// Prefer the provider's static model list.
 	for _, m := range provider.Models() {
 		if m.ID == modelID {
 			return m.SupportsTools, true
-		}
-	}
-
-	// Dynamic fetch for OpenRouter to avoid stale model lists.
-	if provider.ID() == ProviderOpenRouter {
-		if supports, known := toolCapCache.fetchOpenRouter(ctx, openRouterAPIKey, modelID); known {
-			return supports, true
 		}
 	}
 
