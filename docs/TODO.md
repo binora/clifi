@@ -1,74 +1,31 @@
 # TODO
 
-## Next Up
-
-### In-App REPL Commands
-- [ ] `/model` - list and switch models for current provider
-- [ ] `/provider` - list connected providers, switch active provider
-- [ ] `/auth` - connect a new provider from within REPL
-- [ ] `/logout` - clear all credentials, exit to wizard on next launch
-- [ ] `/status` - show current provider, model, wallet, connected providers
-- [ ] Agent hot-swap support (SetProvider, SetModel without restart)
-- [ ] Export `CreateProvider` for REPL to use
+## Critical Path (highest impact)
+- [ ] Safe signing pipeline: intent struct, policy checks (spend limits/allowlists), simulation via `eth_call`, explicit confirmation gates, nonce management, gas estimation/fee display.
+- [ ] Implement send/approve: native sends, ERC20 sends, ERC20 approvals; wire through tools + CLI with prompts.
+- [ ] EIP-712 correctness: build proper typed-data hashing/signing; replace current raw-hash stub.
+- [ ] Receipts/logging: persist receipts (SQLite path in config), add `get_receipt`/`wait_receipt` tool + CLI, surface status in REPL.
+- [ ] REPL operability: `/model`, `/provider`, `/auth`, `/logout`, `/status`; agent hot-swap (SetProvider/SetModel without restart); export provider factory for REPL.
+- [ ] Streaming + responsiveness: enable streaming for Anthropic/OpenAI; propagate contexts/timeouts through tools (no `context.Background()` in handlers); add RPC call timeouts.
+- [ ] Auth diagnostics: make `auth test` hit provider minimally and guard short keys from slicing.
 
 ---
 
-## Phase 3: Safe Signing
-- [ ] Send native tokens (ETH, MATIC)
-- [ ] Send ERC20 tokens
-- [ ] Token approvals (ERC20 approve)
-- [ ] Safety confirmation gates (show params, require explicit yes)
-- [ ] Gas estimation and fee display
-- [ ] Transaction receipt tracking
-- [ ] Nonce management
+## High Impact
+- [ ] Observability and resilience: log RPC failover choices, tool errors, and LLM cost; add per-chain timeout/backoff strategy.
+- [ ] Wallet UX/safety: mnemonic import; hardware wallet path (Ledger/Trezor); multi-wallet context and selection; encrypt auth.json at rest; spend-limit policies.
+- [ ] Conversation/session UX: conversation persistence between sessions; status panel for active provider/model/wallet/chains.
 
 ---
 
-## Phase 4: Swap Primitive
-- [ ] DEX integration (Uniswap v3, etc.)
-- [ ] Quote fetching and comparison
-- [ ] Slippage protection
-- [ ] Multi-hop routing
-- [ ] Token price lookups
+## Medium Impact (primitives)
+- [ ] Swap primitive: DEX integration (Uniswap v3, etc.), quote fetch/compare, slippage protection, multi-hop routing, token price lookups.
+- [ ] Bridge primitive: cross-chain bridge integration, fee comparison, transaction status tracking across chains.
+- [ ] Perps integration: perpetuals interface, position management, risk display.
+- [ ] Plugin SDK: plugin interface, discovery/loading, community registry.
 
 ---
 
-## Phase 5: Bridge Primitive
-- [ ] Cross-chain bridge integration
-- [ ] Bridge fee comparison
-- [ ] Transaction status tracking across chains
-
----
-
-## Phase 6: Perps Integration
-- [ ] Perpetual futures interface
-- [ ] Position management (open, close, modify)
-- [ ] Risk display (liquidation price, margin)
-
----
-
-## Phase 7: Plugin SDK
-- [ ] Plugin interface for custom tools
-- [ ] Plugin discovery and loading
-- [ ] Community plugin registry
-
----
-
-## Improvements
-- [ ] Streaming LLM responses in REPL
-- [ ] Import wallet via mnemonic phrase
-- [ ] Hardware wallet support (Ledger, Trezor)
-- [ ] Encrypt auth.json at rest
-- [ ] Spend limit policies
-- [ ] Transaction history / receipts log
-- [ ] Conversation persistence between sessions
-- [ ] Multi-wallet context (auto-detect which wallet to use)
-
----
-
-## Infrastructure
-- [ ] Release workflow (goreleaser, GitHub releases)
-- [ ] Homebrew formula
-- [ ] Docker image
-- [ ] Integration tests with testnet RPCs
-- [ ] CLI test coverage (internal/cli)
+## Improvements & Infra
+- [ ] Integration tests with mocked testnet RPCs; CLI command coverage (internal/cli).
+- [ ] Release workflow (goreleaser/GitHub releases), Homebrew formula, Docker image.

@@ -13,13 +13,13 @@ var (
 )
 
 const (
-	SymbolPrompt    = "❯"
-	SymbolBullet    = "●"
-	SymbolTree      = "└"
-	SymbolArrow     = "▸"
-	SymbolCheck     = "✓"
-	SymbolCross     = "✗"
-	SymbolThinking  = "◐"
+	SymbolPrompt     = "❯"
+	SymbolBullet     = "●"
+	SymbolTree       = "└"
+	SymbolArrow      = "▸"
+	SymbolCheck      = "✓"
+	SymbolCross      = "✗"
+	SymbolThinking   = "◐"
 	SymbolTreeBranch = "├"
 	SymbolTreePipe   = "│"
 )
@@ -52,7 +52,7 @@ var (
 			Bold(true)
 
 	SelectorItemStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+				Foreground(lipgloss.Color("252"))
 
 	SelectorDim = lipgloss.NewStyle().
 			Foreground(ColorDim)

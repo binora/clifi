@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/yolodolo42/clifi/internal/chain"
@@ -51,7 +52,7 @@ func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, input json
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 
-	return handler(input)
+	return handler(ctx, input)
 }
 
 // Close cleans up resources
@@ -68,7 +69,7 @@ type getBalancesInput struct {
 	Chains  []string `json:"chains"`
 }
 
-func (tr *ToolRegistry) handleGetBalances(input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getBalancesInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -93,7 +94,8 @@ func (tr *ToolRegistry) handleGetBalances(input json.RawMessage) (string, error)
 		}
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	var results []string
 
 	for _, chainName := range params.Chains {
@@ -116,7 +118,7 @@ type getTokenBalanceInput struct {
 	Chain   string `json:"chain"`
 }
 
-func (tr *ToolRegistry) handleGetTokenBalance(input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getTokenBalanceInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -132,7 +134,8 @@ func (tr *ToolRegistry) handleGetTokenBalance(input json.RawMessage) (string, er
 	walletAddr := common.HexToAddress(params.Address)
 	tokenAddr := common.HexToAddress(params.Token)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	balance, err := tr.chainClient.GetTokenBalance(ctx, params.Chain, tokenAddr, walletAddr)
 	if err != nil {
 		return "", err
@@ -142,7 +145,7 @@ func (tr *ToolRegistry) handleGetTokenBalance(input json.RawMessage) (string, er
 	return fmt.Sprintf("Token balance on %s:\n%s %s (%s)", params.Chain, formatted, balance.Symbol, balance.Name), nil
 }
 
-func (tr *ToolRegistry) handleListWallets(input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMessage) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -171,7 +174,7 @@ type getChainInfoInput struct {
 	Chain string `json:"chain"`
 }
 
-func (tr *ToolRegistry) handleGetChainInfo(input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetChainInfo(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getChainInfoInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -199,7 +202,7 @@ Testnet: %v`,
 	return info, nil
 }
 
-func (tr *ToolRegistry) handleListChains(input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleListChains(ctx context.Context, input json.RawMessage) (string, error) {
 	chains := tr.chainClient.ListChains()
 
 	var mainnetChains, testnetChains []string

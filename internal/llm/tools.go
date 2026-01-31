@@ -26,7 +26,7 @@ type ToolResult struct {
 }
 
 // ToolHandler is a function that handles a tool call
-type ToolHandler func(input json.RawMessage) (string, error)
+type ToolHandler func(ctx context.Context, input json.RawMessage) (string, error)
 
 // NewTool creates a new tool definition
 func NewTool(name, description string, schema interface{}) Tool {

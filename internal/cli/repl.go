@@ -14,7 +14,9 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yolodolo42/clifi/internal/agent"
+	"github.com/yolodolo42/clifi/internal/llm"
 	"github.com/yolodolo42/clifi/internal/ui"
+	"github.com/yolodolo42/clifi/internal/wallet"
 )
 
 var mdRenderer *glamour.TermRenderer
@@ -36,6 +38,9 @@ type command struct {
 var commands = []command{
 	{"/help", "Show available commands"},
 	{"/model", "Select AI model interactively"},
+	{"/provider", "Switch AI provider"},
+	{"/auth", "Connect a provider with API key"},
+	{"/status", "Show current provider/model/wallet info"},
 	{"/clear", "Clear chat history"},
 	{"/logout", "Clear credentials and exit"},
 	{"/quit", "Exit clifi"},
@@ -71,9 +76,9 @@ type model struct {
 	ready         bool
 	quitting      bool
 	mode          replMode
-	modelSelector  ui.Selector
-	suggestions    []command
-	suggestionIdx  int
+	modelSelector ui.Selector
+	suggestions   []command
+	suggestionIdx int
 }
 
 // responseMsg is sent when the agent responds
@@ -491,6 +496,15 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "/model":
 		return m.handleModelCommand(arg)
 
+	case "/provider":
+		return m.handleProviderCommand(arg)
+
+	case "/auth":
+		return m.handleAuthCommand(arg)
+
+	case "/status":
+		return m.handleStatusCommand()
+
 	case "/help", "/?":
 		var helpText strings.Builder
 		helpText.WriteString("Commands:\n")
@@ -587,6 +601,248 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 	m.prompt.Blur()
 
 	return m, nil
+}
+
+// handleProviderCommand lists or switches providers
+func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
+	if m.agent == nil {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: "Agent not initialized.",
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	manager, err := getAuthManager()
+	if err != nil {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Failed to load auth manager: %v", err),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	if providerID == "" {
+		connected := manager.ListConnected()
+		defaultProvider := manager.GetDefaultProvider()
+		current := m.agent.CurrentProviderID()
+
+		var builder strings.Builder
+		builder.WriteString("Providers:\n")
+		if len(connected) == 0 {
+			builder.WriteString("  (none connected)\n")
+		} else {
+			for _, p := range connected {
+				marker := " "
+				if p == current {
+					marker = "*"
+				}
+				builder.WriteString(fmt.Sprintf("  %s %s\n", marker, p))
+			}
+		}
+		builder.WriteString(fmt.Sprintf("\nCurrent: %s\nDefault: %s\nUse /provider <id> to switch.", current, defaultProvider))
+
+		m.messages = append(m.messages, chatMessage{
+			kind:    "system",
+			content: builder.String(),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	target := llm.ProviderID(strings.ToLower(providerID))
+	if !manager.HasCredential(target) {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Provider %s is not connected. Use /auth %s <api_key> or set env var.", target, target),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	if err := m.agent.SetProvider(target); err != nil {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Failed to switch provider: %v", err),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	_ = manager.SetDefaultProvider(target)
+
+	m.messages = append(m.messages, chatMessage{
+		kind:    "system",
+		content: fmt.Sprintf("Switched provider to %s (%s). Conversation cleared.", target, m.agent.ProviderName()),
+		time:    time.Now(),
+	})
+	m.updateViewport()
+	return m, nil
+}
+
+// handleAuthCommand stores an API key for a provider (API-key flows only)
+func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
+	if arg == "" {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: "Usage: /auth <provider> <api_key>",
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	parts := strings.Fields(arg)
+	providerStr := strings.ToLower(parts[0])
+	target := llm.ProviderID(providerStr)
+
+	// Validate provider
+	valid := false
+	for _, pid := range llm.AllProviderIDs() {
+		if pid == target {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Unknown provider: %s", target),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	// Copilot OAuth not supported in REPL
+	if target == llm.ProviderCopilot {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: "GitHub Copilot requires OAuth. Run: clifi auth connect copilot --oauth",
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	key := ""
+	if len(parts) > 1 {
+		key = parts[1]
+	} else {
+		if envVar := llm.EnvVarForProvider(target); envVar != "" {
+			key = os.Getenv(envVar)
+		}
+	}
+
+	if key == "" {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Missing API key. Usage: /auth %s <api_key> or set %s env var.", target, llm.EnvVarForProvider(target)),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	manager, err := getAuthManager()
+	if err != nil {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Failed to load auth manager: %v", err),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	if err := manager.SetAPIKey(target, key); err != nil {
+		m.messages = append(m.messages, chatMessage{
+			kind:    "error",
+			content: fmt.Sprintf("Failed to save credential: %v", err),
+			time:    time.Now(),
+		})
+		m.updateViewport()
+		return m, nil
+	}
+
+	_ = manager.SetDefaultProvider(target)
+
+	m.messages = append(m.messages, chatMessage{
+		kind:    "system",
+		content: fmt.Sprintf("Connected provider %s. Use /provider %s to switch.", target, target),
+		time:    time.Now(),
+	})
+	m.updateViewport()
+	return m, nil
+}
+
+// handleStatusCommand shows current provider/model and wallet info
+func (m model) handleStatusCommand() (tea.Model, tea.Cmd) {
+	currentProvider := ""
+	currentModel := ""
+	if m.agent != nil {
+		currentProvider = string(m.agent.CurrentProviderID())
+		currentModel = m.agent.CurrentModel()
+	}
+
+	manager, err := getAuthManager()
+	var connected []llm.ProviderID
+	var defaultProvider llm.ProviderID
+	if err == nil {
+		connected = manager.ListConnected()
+		defaultProvider = manager.GetDefaultProvider()
+	}
+
+	// Wallet info
+	var walletLine string
+	dataDir := getDataDir()
+	if km, err := wallet.NewKeystoreManager(dataDir); err == nil {
+		accounts := km.ListAccounts()
+		if len(accounts) > 0 {
+			walletLine = fmt.Sprintf("%d wallet(s), first: %s", len(accounts), accounts[0].Address.Hex())
+		} else {
+			walletLine = "no wallets configured"
+		}
+	} else {
+		walletLine = fmt.Sprintf("wallet load error: %v", err)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Status:\n")
+	builder.WriteString(fmt.Sprintf("- Provider: %s (%s)\n", currentProvider, func() string {
+		if m.agent != nil {
+			return m.agent.ProviderName()
+		}
+		return "not initialized"
+	}()))
+	builder.WriteString(fmt.Sprintf("- Model: %s\n", currentModel))
+	builder.WriteString(fmt.Sprintf("- Connected providers: %s\n", strings.Join(providerIDsToStrings(connected), ", ")))
+	builder.WriteString(fmt.Sprintf("- Default provider: %s\n", defaultProvider))
+	builder.WriteString(fmt.Sprintf("- Wallets: %s\n", walletLine))
+	builder.WriteString("Use /provider <id> to switch; /model to change model.")
+
+	m.messages = append(m.messages, chatMessage{
+		kind:    "system",
+		content: builder.String(),
+		time:    time.Now(),
+	})
+	m.updateViewport()
+	return m, nil
+}
+
+func providerIDsToStrings(ids []llm.ProviderID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return out
 }
 
 // sendToAgent sends a message to the agent and returns a command

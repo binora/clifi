@@ -26,6 +26,8 @@ type Agent struct {
 	// calls from interleaving messages and corrupting conversation state.
 	mu           sync.Mutex
 	provider     llm.Provider
+	authManager  *auth.Manager
+	dataDir      string
 	toolRegistry *ToolRegistry
 	systemPrompt string
 	conversation []llm.Message
@@ -106,15 +108,17 @@ func New(providerID string) (*Agent, error) {
 
 	return &Agent{
 		provider:     provider,
+		authManager:  authManager,
+		dataDir:      dataDir,
 		toolRegistry: NewToolRegistry(),
 		systemPrompt: SystemPrompt,
 		conversation: make([]llm.Message, 0),
 	}, nil
 }
 
-// createProvider creates a provider instance based on available credentials.
+// CreateProvider creates a provider instance based on available credentials.
 // It first checks for OAuth tokens, then falls back to API keys.
-func createProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.Provider, error) {
+func CreateProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.Provider, error) {
 	// Try to get credential (OAuth or API key)
 	key, err := getProviderKey(authManager, providerID)
 	if err != nil {
@@ -143,6 +147,11 @@ func createProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.P
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", providerID)
 	}
+}
+
+// createProvider is a thin wrapper kept for internal backward-compatibility.
+func createProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.Provider, error) {
+	return CreateProvider(authManager, providerID)
 }
 
 // getProviderKey returns either an OAuth access token or API key for a provider.
@@ -330,6 +339,32 @@ func (a *Agent) ListModels() []llm.Model {
 // ProviderName returns the human-readable name of the current provider.
 func (a *Agent) ProviderName() string {
 	return a.provider.Name()
+}
+
+// CurrentProviderID returns the provider identifier for the active provider.
+func (a *Agent) CurrentProviderID() llm.ProviderID {
+	return a.provider.ID()
+}
+
+// SetProvider switches to a new provider and clears conversation history.
+// If initialization fails, the current provider remains unchanged.
+func (a *Agent) SetProvider(providerID llm.ProviderID) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.authManager == nil {
+		// Should not happen for normal construction, but guard to avoid panic.
+		return fmt.Errorf("auth manager not initialized")
+	}
+
+	newProvider, err := createProvider(a.authManager, providerID)
+	if err != nil {
+		return err
+	}
+
+	a.provider = newProvider
+	a.conversation = make([]llm.Message, 0)
+	return nil
 }
 
 // Reset clears the conversation history. Safe to call concurrently with Chat().

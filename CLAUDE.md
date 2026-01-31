@@ -4,6 +4,7 @@
 * we will never compromise on performance as a first class citizen
 * we will ensure atleast 85% test coverage
 * comments should be about WHY. not WHAT
+* after completing any plan, run `make fmt`, `make lint`, and `make test`
 
 
 # Little Proofs
@@ -15,4 +16,3 @@
 5. Induction - For recursion, prove base case + inductive step                                                                                                             
                                                                                                                                                                            
 Core insight: Judge code quality by how easily you can reason about its correctness.  
-
