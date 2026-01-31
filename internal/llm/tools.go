@@ -52,6 +52,22 @@ type Property struct {
 	Default     any      `json:"default,omitempty"`
 }
 
+// ToolChoice controls how the LLM may call tools.
+// Mode defaults to auto when zero-valued.
+type ToolChoiceMode string
+
+const (
+	ToolChoiceAuto  ToolChoiceMode = "auto"
+	ToolChoiceNone  ToolChoiceMode = "none"
+	ToolChoiceForce ToolChoiceMode = "force"
+)
+
+type ToolChoice struct {
+	Mode ToolChoiceMode `json:"mode,omitempty"`
+	// Name is required when Mode == ToolChoiceForce.
+	Name string `json:"name,omitempty"`
+}
+
 // CryptoTools returns the standard crypto tools for the agent
 func CryptoTools() []Tool {
 	return []Tool{

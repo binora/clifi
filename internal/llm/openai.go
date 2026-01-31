@@ -169,6 +169,10 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		openaiReq.Tools = tools
 	}
 
+	if tc := mapToolChoice(req.ToolChoice, len(tools) > 0); tc != nil {
+		openaiReq.ToolChoice = tc
+	}
+
 	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat completion: %w", err)
@@ -289,6 +293,10 @@ func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 		openaiReq.Tools = tools
 	}
 
+	if tc := mapToolChoice(req.ToolChoice, len(tools) > 0); tc != nil {
+		openaiReq.ToolChoice = tc
+	}
+
 	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat completion: %w", err)
@@ -319,4 +327,28 @@ func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 	}
 
 	return response, nil
+}
+
+func mapToolChoice(choice ToolChoice, hasTools bool) any {
+	// If no tools are present, tool choice is irrelevant.
+	if !hasTools {
+		return nil
+	}
+
+	switch choice.Mode {
+	case ToolChoiceNone:
+		return "none"
+	case ToolChoiceForce:
+		if choice.Name == "" {
+			return nil
+		}
+		return openai.ToolChoice{
+			Type: openai.ToolTypeFunction,
+			Function: openai.ToolFunction{
+				Name: choice.Name,
+			},
+		}
+	default: // auto (zero value)
+		return "auto"
+	}
 }

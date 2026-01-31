@@ -33,6 +33,9 @@ test-coverage:
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
+test-integration:
+	OPENROUTER_API_KEY=$$OPENROUTER_API_KEY go test -tags=integration -v ./internal/llm -run OpenRouter
+
 # Run linter (auto-installs golangci-lint if missing)
 lint:
 	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)

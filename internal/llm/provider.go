@@ -69,11 +69,12 @@ type ToolCall struct {
 
 // ChatRequest is a provider-agnostic chat request
 type ChatRequest struct {
-	SystemPrompt string    `json:"system_prompt"`
-	Messages     []Message `json:"messages"`
-	Tools        []Tool    `json:"tools,omitempty"`
-	Model        string    `json:"model,omitempty"` // Uses default if empty
-	MaxTokens    int       `json:"max_tokens,omitempty"`
+	SystemPrompt string     `json:"system_prompt"`
+	Messages     []Message  `json:"messages"`
+	Tools        []Tool     `json:"tools,omitempty"`
+	Model        string     `json:"model,omitempty"` // Uses default if empty
+	ToolChoice   ToolChoice `json:"tool_choice,omitempty"`
+	MaxTokens    int        `json:"max_tokens,omitempty"`
 }
 
 // ChatResponse is a provider-agnostic chat response
