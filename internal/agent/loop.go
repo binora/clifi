@@ -194,17 +194,29 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 		return nil, fmt.Errorf("agent provider not initialized")
 	}
 
-	var events []ChatEvent
-
 	a.conversation = append(a.conversation, llm.Message{
 		Role:    "user",
 		Content: userMessage,
 	})
 
+	modelID := a.provider.DefaultModel()
+	openRouterKey := a.getOpenRouterAPIKey()
+
+	tools := a.toolRegistry.GetTools()
+	supportsTools, knownTools := llm.SupportsToolsForModel(ctx, a.provider, modelID, openRouterKey)
+	var events []ChatEvent
+	if knownTools && !supportsTools {
+		tools = nil
+		events = append(events, ChatEvent{
+			Type:    "content",
+			Content: fmt.Sprintf("Tools disabled for model %s; running without on-chain tools. Switch to a tool-capable model (e.g., openai/gpt-4o) for balances/wallet actions.", modelID),
+		})
+	}
+
 	req := &llm.ChatRequest{
 		SystemPrompt: a.systemPrompt,
 		Messages:     a.conversation,
-		Tools:        a.toolRegistry.GetTools(),
+		Tools:        tools,
 	}
 
 	response, err := a.provider.Chat(ctx, req)
@@ -236,6 +248,17 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 	}
 
 	return events, nil
+}
+
+func (a *Agent) getOpenRouterAPIKey() string {
+	if a.authManager == nil {
+		return ""
+	}
+	key, err := a.authManager.GetAPIKey(llm.ProviderOpenRouter)
+	if err != nil {
+		return ""
+	}
+	return key
 }
 
 // executeToolCallsInternal runs tool calls with optional event emission.

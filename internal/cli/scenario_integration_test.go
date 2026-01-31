@@ -49,8 +49,8 @@ func TestScenario_OpenRouter_ToolUnsupportedIsGraceful(t *testing.T) {
 			},
 			{
 				Input:       "list wallets", // will attempt a tool call and should be handled
-				ExpectSubs:  []string{"tools not supported", "openrouter", "claude"},
-				ExpectError: true,
+				ExpectSubs:  []string{"Tools disabled for model", "openai/gpt-4o"},
+				ExpectError: false,
 			},
 		},
 		RequiresTools: false,
