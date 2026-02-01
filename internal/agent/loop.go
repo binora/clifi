@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/yolodolo42/clifi/internal/auth"
@@ -207,9 +208,10 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 	var events []ChatEvent
 	if knownTools && !supportsTools {
 		tools = nil
+		suggestion := suggestToolModel(a.provider)
 		events = append(events, ChatEvent{
 			Type:    "content",
-			Content: fmt.Sprintf("Tools disabled for model %s; running without on-chain tools. Switch to a tool-capable model (e.g., openai/gpt-4o) for balances/wallet actions.", modelID),
+			Content: fmt.Sprintf("Tools disabled for model %s; running without on-chain tools. Switch to a tool-capable model%s for balances/wallet actions.", modelID, suggestion),
 		})
 	}
 
@@ -259,6 +261,28 @@ func (a *Agent) getOpenRouterAPIKey() string {
 		return ""
 	}
 	return key
+}
+
+func suggestToolModel(p llm.Provider) string {
+	var candidates []string
+	for _, m := range p.Models() {
+		if m.SupportsTools {
+			candidates = append(candidates, m.ID)
+		}
+		if len(candidates) >= 3 {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		// Fallback to a known tool-capable model if available
+		if p.ID() != llm.ProviderOpenAI {
+			candidates = append(candidates, "openai/gpt-4o")
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (e.g., %s)", strings.Join(candidates, ", "))
 }
 
 // executeToolCallsInternal runs tool calls with optional event emission.
