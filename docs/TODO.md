@@ -28,4 +28,5 @@
 
 ## Improvements & Infra
 - [ ] Integration tests with mocked testnet RPCs; CLI command coverage (internal/cli).
+- [ ] OpenRouter live tool-call canary (env-gated) to ensure tool-capable models keep working.
 - [ ] Release workflow (goreleaser/GitHub releases), Homebrew formula, Docker image.

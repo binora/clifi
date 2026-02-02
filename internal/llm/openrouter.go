@@ -18,8 +18,16 @@ type OpenRouterProvider struct {
 // OpenRouterModels lists popular OpenRouter models
 var OpenRouterModels = []Model{
 	{
-		ID:            "anthropic/claude-sonnet-4",
-		Name:          "Claude Sonnet 4",
+		ID:            "anthropic/claude-3.7-sonnet",
+		Name:          "Claude 3.7 Sonnet",
+		ContextWindow: 200000,
+		InputCost:     3.0,
+		OutputCost:    15.0,
+		SupportsTools: true,
+	},
+	{
+		ID:            "anthropic/claude-3.5-sonnet",
+		Name:          "Claude 3.5 Sonnet",
 		ContextWindow: 200000,
 		InputCost:     3.0,
 		OutputCost:    15.0,
@@ -71,7 +79,7 @@ func NewOpenRouterProvider(apiKey string, model string) (*OpenRouterProvider, er
 	client := openai.NewClientWithConfig(config)
 
 	if model == "" {
-		model = "anthropic/claude-sonnet-4"
+		model = "anthropic/claude-3.5-sonnet"
 	}
 
 	return &OpenRouterProvider{

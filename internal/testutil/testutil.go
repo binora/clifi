@@ -47,3 +47,10 @@ func UnsetEnv(t *testing.T, key string) {
 		}
 	})
 }
+
+// GetEnv returns the value of an environment variable without failing tests.
+// Useful for optional integration tests that skip when the value is empty.
+func GetEnv(t *testing.T, key string) string {
+	t.Helper()
+	return os.Getenv(key)
+}
