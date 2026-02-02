@@ -142,5 +142,58 @@ func CryptoTools() []Tool {
 				"properties": {}
 			}`),
 		},
+		{
+			Name:        "send_native",
+			Description: "Send native tokens on an EVM chain with safety checks and confirmation",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"from": {"type": "string", "description": "Sender address (0x...), defaults to first keystore account"},
+					"to": {"type": "string", "description": "Recipient address (0x...)", "default": ""},
+					"chain": {"type": "string", "description": "Chain name, e.g., ethereum, base, arbitrum, optimism, polygon"},
+					"amount_eth": {"type": "string", "description": "Amount in ETH (decimal string)"},
+					"password": {"type": "string", "description": "Keystore password for the from account"},
+					"confirm": {"type": "boolean", "description": "Set true to broadcast after preview", "default": false},
+					"wait": {"type": "boolean", "description": "Wait for receipt (default true)", "default": true}
+				},
+				"required": ["to", "chain", "amount_eth"]
+			}`),
+		},
+		{
+			Name:        "send_token",
+			Description: "Send ERC20 tokens on an EVM chain with safety checks and confirmation",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"from": {"type": "string", "description": "Sender address (0x...), defaults to first keystore account"},
+					"to": {"type": "string", "description": "Recipient address (0x...)"},
+					"token": {"type": "string", "description": "ERC20 contract address"},
+					"chain": {"type": "string", "description": "Chain name, e.g., ethereum, base"},
+					"amount_tokens": {"type": "string", "description": "Token amount in human-readable units"},
+					"password": {"type": "string", "description": "Keystore password for the from account"},
+					"confirm": {"type": "boolean", "description": "Set true to broadcast after preview", "default": false},
+					"wait": {"type": "boolean", "description": "Wait for receipt (default true)", "default": true}
+				},
+				"required": ["to", "token", "chain", "amount_tokens"]
+			}`),
+		},
+		{
+			Name:        "approve_token",
+			Description: "Approve ERC20 spend for a spender",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"from": {"type": "string", "description": "Owner address (0x...), defaults to first keystore account"},
+					"spender": {"type": "string", "description": "Spender address (0x...)", "default": ""},
+					"token": {"type": "string", "description": "ERC20 contract address"},
+					"chain": {"type": "string", "description": "Chain name, e.g., ethereum, base"},
+					"amount_tokens": {"type": "string", "description": "Allowance amount in human-readable units"},
+					"password": {"type": "string", "description": "Keystore password"},
+					"confirm": {"type": "boolean", "description": "Set true to broadcast after preview", "default": false},
+					"wait": {"type": "boolean", "description": "Wait for receipt (default true)", "default": true}
+				},
+				"required": ["spender", "token", "chain", "amount_tokens"]
+			}`),
+		},
 	}
 }
