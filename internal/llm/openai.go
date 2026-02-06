@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"errors"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -13,6 +15,7 @@ type OpenAIProvider struct {
 	client  *openai.Client
 	model   string
 	baseURL string
+	stream  bool
 }
 
 // OpenAIModels lists available OpenAI models
@@ -72,6 +75,7 @@ func NewOpenAIProvider(apiKey string, model string, baseURL string) (*OpenAIProv
 		client:  client,
 		model:   model,
 		baseURL: baseURL,
+		stream:  true,
 	}, nil
 }
 
@@ -173,9 +177,13 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		openaiReq.ToolChoice = tc
 	}
 
-	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	resp, err := p.streamChat(ctx, openaiReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create chat completion: %w", err)
+		nonStream, err2 := p.client.CreateChatCompletion(ctx, openaiReq)
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to create chat completion: %w", err2)
+		}
+		resp = &nonStream
 	}
 
 	if len(resp.Choices) == 0 {
@@ -204,6 +212,46 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 	}
 
 	return response, nil
+}
+
+// streamChat runs streaming when enabled to reduce latency; falls back to non-stream if unsupported.
+func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
+	if !p.stream {
+		return nil, fmt.Errorf("streaming disabled")
+	}
+	stream, err := p.client.CreateChatCompletionStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	var final openai.ChatCompletionResponse
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		final.Model = chunk.Model
+		final.ID = chunk.ID
+		for _, ch := range chunk.Choices {
+			final.Choices = append(final.Choices, openai.ChatCompletionChoice{
+				Index:        ch.Index,
+				FinishReason: ch.FinishReason,
+				Message: openai.ChatCompletionMessage{
+					Role:    ch.Delta.Role,
+					Content: ch.Delta.Content,
+					ToolCalls: ch.Delta.ToolCalls,
+				},
+			})
+		}
+		if chunk.Usage != nil {
+			final.Usage = *chunk.Usage
+		}
+	}
+	return &final, nil
 }
 
 // ChatWithToolResults continues a conversation with tool results
