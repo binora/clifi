@@ -195,5 +195,30 @@ func CryptoTools() []Tool {
 				"required": ["spender", "token", "chain", "amount_tokens"]
 			}`),
 		},
+		{
+			Name:        "get_receipt",
+			Description: "Get a transaction receipt (cached when available) for an EVM chain",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"chain": {"type": "string", "description": "Chain name, e.g., ethereum, base"},
+					"tx_hash": {"type": "string", "description": "Transaction hash (0x...)"} 
+				},
+				"required": ["chain", "tx_hash"]
+			}`),
+		},
+		{
+			Name:        "wait_receipt",
+			Description: "Wait for a transaction to be mined and return its receipt",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"chain": {"type": "string", "description": "Chain name, e.g., ethereum, base"},
+					"tx_hash": {"type": "string", "description": "Transaction hash (0x...)"},
+					"timeout_sec": {"type": "integer", "description": "Timeout in seconds (default 120)", "default": 120}
+				},
+				"required": ["chain", "tx_hash"]
+			}`),
+		},
 	}
 }

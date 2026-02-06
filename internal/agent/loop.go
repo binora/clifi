@@ -60,7 +60,7 @@ const SystemPrompt = `You are clifi, a terminal-first crypto operator agent. You
 You have access to tools for querying blockchain state. Use them proactively when users ask about their portfolio, balances, or chain information.
 
 Current limitations:
-- Read-only operations only (no sending/signing yet)
+- State-changing tools (send/approve) require explicit confirmation (confirm=true) before broadcasting
 - EVM chains only (no Solana, Bitcoin, etc.)
 - Native tokens and ERC20 tokens only`
 
@@ -111,7 +111,7 @@ func New(providerID string) (*Agent, error) {
 		provider:     provider,
 		authManager:  authManager,
 		dataDir:      dataDir,
-		toolRegistry: NewToolRegistry(),
+		toolRegistry: NewToolRegistryWithDataDir(dataDir),
 		systemPrompt: SystemPrompt,
 		conversation: make([]llm.Message, 0),
 	}, nil

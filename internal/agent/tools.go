@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -24,14 +25,29 @@ type ToolRegistry struct {
 	tools       []llm.Tool
 	handlers    map[string]llm.ToolHandler
 	chainClient *chain.Client
+	receipts    *ReceiptStore
 }
 
 // NewToolRegistry creates a new tool registry with default crypto tools
 func NewToolRegistry() *ToolRegistry {
+	return NewToolRegistryWithDataDir("")
+}
+
+// NewToolRegistryWithDataDir creates a new tool registry bound to a given data directory.
+// When dataDir is empty, it uses an in-memory receipt store to avoid touching disk in tests.
+func NewToolRegistryWithDataDir(dataDir string) *ToolRegistry {
+	var rs *ReceiptStore
+	if dataDir == "" {
+		rs, _ = OpenReceiptStoreDSN(":memory:")
+	} else {
+		rs, _ = OpenReceiptStore(dataDir)
+	}
+
 	tr := &ToolRegistry{
 		tools:       llm.CryptoTools(),
 		handlers:    make(map[string]llm.ToolHandler),
 		chainClient: chain.NewClient(),
+		receipts:    rs,
 	}
 
 	// Register handlers
@@ -43,6 +59,8 @@ func NewToolRegistry() *ToolRegistry {
 	tr.handlers["send_native"] = tr.handleSendNative
 	tr.handlers["send_token"] = tr.handleSendToken
 	tr.handlers["approve_token"] = tr.handleApproveToken
+	tr.handlers["get_receipt"] = tr.handleGetReceipt
+	tr.handlers["wait_receipt"] = tr.handleWaitReceipt
 
 	return tr
 }
@@ -66,6 +84,9 @@ func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, input json
 func (tr *ToolRegistry) Close() {
 	if tr.chainClient != nil {
 		tr.chainClient.Close()
+	}
+	if tr.receipts != nil {
+		_ = tr.receipts.Close()
 	}
 }
 
@@ -389,6 +410,9 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		defer cancel()
 		receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash())
 		if err == nil && receipt != nil {
+			if tr.receipts != nil {
+				_ = tr.receipts.Upsert(params.Chain, receipt)
+			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
 	}
@@ -518,6 +542,9 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
+			if tr.receipts != nil {
+				_ = tr.receipts.Upsert(params.Chain, receipt)
+			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
 	}
@@ -645,10 +672,126 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
+			if tr.receipts != nil {
+				_ = tr.receipts.Upsert(params.Chain, receipt)
+			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
 	}
 	return result, nil
+}
+
+type getReceiptInput struct {
+	Chain  string `json:"chain"`
+	TxHash string `json:"tx_hash"`
+}
+
+func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMessage) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	var params getReceiptInput
+	if err := json.Unmarshal(input, &params); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if params.Chain == "" {
+		return "", fmt.Errorf("chain is required")
+	}
+	if params.TxHash == "" {
+		return "", fmt.Errorf("tx_hash is required")
+	}
+	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
+		return "", fmt.Errorf("unknown chain: %s", params.Chain)
+	}
+
+	txHash, err := parseTxHash(params.TxHash)
+	if err != nil {
+		return "", err
+	}
+
+	if tr.receipts != nil {
+		if stored, err := tr.receipts.Get(params.Chain, params.TxHash); err == nil {
+			return fmt.Sprintf("Receipt (cached):\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+				stored.Chain, stored.TxHash, stored.Status, stored.GasUsed,
+			), nil
+		}
+	}
+
+	receipt, err := tr.chainClient.GetTransactionReceipt(ctx, params.Chain, txHash)
+	if err != nil {
+		return "", fmt.Errorf("receipt not found (tx may be pending): %w", err)
+	}
+
+	if tr.receipts != nil {
+		_ = tr.receipts.Upsert(params.Chain, receipt)
+	}
+
+	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
+	), nil
+}
+
+type waitReceiptInput struct {
+	Chain      string `json:"chain"`
+	TxHash     string `json:"tx_hash"`
+	TimeoutSec int    `json:"timeout_sec"`
+}
+
+func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMessage) (string, error) {
+	var params waitReceiptInput
+	if err := json.Unmarshal(input, &params); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if params.Chain == "" {
+		return "", fmt.Errorf("chain is required")
+	}
+	if params.TxHash == "" {
+		return "", fmt.Errorf("tx_hash is required")
+	}
+	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
+		return "", fmt.Errorf("unknown chain: %s", params.Chain)
+	}
+	txHash, err := parseTxHash(params.TxHash)
+	if err != nil {
+		return "", err
+	}
+
+	timeout := 120 * time.Second
+	if params.TimeoutSec > 0 {
+		if params.TimeoutSec < 5 {
+			params.TimeoutSec = 5
+		}
+		if params.TimeoutSec > 600 {
+			params.TimeoutSec = 600
+		}
+		timeout = time.Duration(params.TimeoutSec) * time.Second
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, txHash)
+	if err != nil {
+		return "", fmt.Errorf("wait mined: %w", err)
+	}
+	if tr.receipts != nil {
+		_ = tr.receipts.Upsert(params.Chain, receipt)
+	}
+
+	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
+	), nil
+}
+
+func parseTxHash(v string) (common.Hash, error) {
+	if !strings.HasPrefix(v, "0x") || len(v) != 66 {
+		return common.Hash{}, fmt.Errorf("invalid tx hash")
+	}
+	b, err := hex.DecodeString(v[2:])
+	if err != nil || len(b) != 32 {
+		return common.Hash{}, fmt.Errorf("invalid tx hash")
+	}
+	return common.BytesToHash(b), nil
 }
 
 func parseEthToWei(amount string) (*big.Int, error) {
