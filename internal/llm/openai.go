@@ -3,9 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"errors"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -219,11 +219,13 @@ func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompleti
 	if !p.stream {
 		return nil, fmt.Errorf("streaming disabled")
 	}
-	stream, err := p.client.CreateChatCompletionStream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
+    stream, err := p.client.CreateChatCompletionStream(ctx, req)
+    if err != nil {
+        return nil, err
+    }
+    defer func() {
+        _ = stream.Close()
+    }()
 
 	var final openai.ChatCompletionResponse
 	for {
@@ -241,8 +243,8 @@ func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompleti
 				Index:        ch.Index,
 				FinishReason: ch.FinishReason,
 				Message: openai.ChatCompletionMessage{
-					Role:    ch.Delta.Role,
-					Content: ch.Delta.Content,
+					Role:      ch.Delta.Role,
+					Content:   ch.Delta.Content,
 					ToolCalls: ch.Delta.ToolCalls,
 				},
 			})
