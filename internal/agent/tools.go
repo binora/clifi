@@ -240,7 +240,7 @@ type sendNativeInput struct {
 	AmountETH string `json:"amount_eth"`
 	Password  string `json:"password"`
 	Confirm   bool   `json:"confirm"`
-	Wait      bool   `json:"wait"`
+	Wait      *bool  `json:"wait"`
 }
 
 type sendTokenInput struct {
@@ -251,7 +251,7 @@ type sendTokenInput struct {
 	AmountTokens string `json:"amount_tokens"`
 	Password     string `json:"password"`
 	Confirm      bool   `json:"confirm"`
-	Wait         bool   `json:"wait"`
+	Wait         *bool  `json:"wait"`
 	AllowApprove bool   `json:"allow_approve"` // for spender approvals
 	Spender      string `json:"spender"`
 	ApprovalFlow bool   `json:"approval_flow"`
@@ -265,7 +265,7 @@ type approveTokenInput struct {
 	AmountTokens string `json:"amount_tokens"`
 	Password     string `json:"password"`
 	Confirm      bool   `json:"confirm"`
-	Wait         bool   `json:"wait"`
+	Wait         *bool  `json:"wait"`
 }
 
 func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMessage) (string, error) {
@@ -380,6 +380,10 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
 
 	wait := true
+	if params.Wait != nil {
+		wait = *params.Wait
+	}
+
 	if wait {
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
@@ -504,7 +508,13 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
-	if params.Wait {
+
+	wait := true
+	if params.Wait != nil {
+		wait = *params.Wait
+	}
+
+	if wait {
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
@@ -625,7 +635,13 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
-	if params.Wait {
+
+	wait := true
+	if params.Wait != nil {
+		wait = *params.Wait
+	}
+
+	if wait {
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
