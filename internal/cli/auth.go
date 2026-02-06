@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yolodolo42/clifi/internal/auth"
@@ -310,18 +311,60 @@ func runAuthTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get API key: %w", err)
 	}
 
-	fmt.Printf("Testing connection to %s...\n", providerID)
-
-	if apiKey == "" {
-		return fmt.Errorf("no API key stored for %s", providerID)
+	if len(apiKey) < 12 { // guard accidental paste of short keys
+		return fmt.Errorf("API key for %s looks too short; please re-enter", providerID)
 	}
 
-	// TODO: Actually test the API connection
-	fmt.Printf("Credentials found for %s (key: %s...%s)\n",
-		providerID,
-		apiKey[:4],
-		apiKey[len(apiKey)-4:],
-	)
+	fmt.Printf("Testing connection to %s...\n", providerID)
 
+	if err := pingProvider(cmd.Context(), providerID, apiKey); err != nil {
+		return fmt.Errorf("provider test failed: %w", err)
+	}
+
+	fmt.Printf("%s credentials OK.\n", providerID)
 	return nil
+}
+
+// pingProvider performs a lightweight connectivity check per provider.
+// It keeps token usage tiny by requesting a 1-token reply where possible.
+func pingProvider(ctx context.Context, providerID llm.ProviderID, apiKey string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	switch providerID {
+	case llm.ProviderOpenAI:
+		p, err := llm.NewOpenAIProvider(apiKey, "", "")
+		if err != nil {
+			return err
+		}
+		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
+		return err
+
+	case llm.ProviderOpenRouter:
+		p, err := llm.NewOpenRouterProvider(apiKey, "")
+		if err != nil {
+			return err
+		}
+		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
+		return err
+
+	case llm.ProviderAnthropic:
+		p, err := llm.NewAnthropicProvider(apiKey, "")
+		if err != nil {
+			return err
+		}
+		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
+		return err
+
+	case llm.ProviderGemini:
+		p, err := llm.NewGeminiProvider(ctx, apiKey, "")
+		if err != nil {
+			return err
+		}
+		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
+		return err
+
+	default:
+		return fmt.Errorf("provider %s not supported for auth test yet", providerID)
+	}
 }
