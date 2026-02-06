@@ -1,5 +1,12 @@
 .PHONY: build test lint clean install fmt check install-hooks
 
+# Some execution environments (including sandboxed runners) can't use the
+# default $HOME/Library/Caches/go-build path. Keep build cache local.
+export GOCACHE ?= $(CURDIR)/.gocache
+
+# golangci-lint also uses its own cache under $HOME by default.
+export GOLANGCI_LINT_CACHE ?= $(CURDIR)/.golangci-cache
+
 # Build variables
 BINARY_NAME=clifi
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")

@@ -39,3 +39,10 @@ tmp/
 # Environment variables
 .env
 .env.local
+
+# Local build/lint caches
+.gocache/
+.golangci-cache/
+
+# Local MCP config
+.mcp.json

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -177,8 +178,14 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		openaiReq.ToolChoice = tc
 	}
 
-	resp, err := p.streamChat(ctx, openaiReq)
-	if err != nil {
+	var resp *openai.ChatCompletionResponse
+	var err error
+	// Tool calling deltas are painful to merge correctly in streaming; keep streaming
+	// to plain-text chats only for now and fall back automatically.
+	if len(tools) == 0 {
+		resp, err = p.streamChat(ctx, openaiReq)
+	}
+	if resp == nil || err != nil {
 		nonStream, err2 := p.client.CreateChatCompletion(ctx, openaiReq)
 		if err2 != nil {
 			return nil, fmt.Errorf("failed to create chat completion: %w", err2)
@@ -219,15 +226,18 @@ func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompleti
 	if !p.stream {
 		return nil, fmt.Errorf("streaming disabled")
 	}
-    stream, err := p.client.CreateChatCompletionStream(ctx, req)
-    if err != nil {
-        return nil, err
-    }
-    defer func() {
-        _ = stream.Close()
-    }()
+	stream, err := p.client.CreateChatCompletionStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	var final openai.ChatCompletionResponse
+	var content strings.Builder
+	var role string
+	var finishReason openai.FinishReason
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -239,19 +249,30 @@ func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompleti
 		final.Model = chunk.Model
 		final.ID = chunk.ID
 		for _, ch := range chunk.Choices {
-			final.Choices = append(final.Choices, openai.ChatCompletionChoice{
-				Index:        ch.Index,
-				FinishReason: ch.FinishReason,
-				Message: openai.ChatCompletionMessage{
-					Role:      ch.Delta.Role,
-					Content:   ch.Delta.Content,
-					ToolCalls: ch.Delta.ToolCalls,
-				},
-			})
+			// We request a single choice; accumulate it into one final message.
+			if ch.Delta.Role != "" {
+				role = ch.Delta.Role
+			}
+			if ch.Delta.Content != "" {
+				content.WriteString(ch.Delta.Content)
+			}
+			if ch.FinishReason != "" {
+				finishReason = ch.FinishReason
+			}
 		}
 		if chunk.Usage != nil {
 			final.Usage = *chunk.Usage
 		}
+	}
+	final.Choices = []openai.ChatCompletionChoice{
+		{
+			Index:        0,
+			FinishReason: finishReason,
+			Message: openai.ChatCompletionMessage{
+				Role:    role,
+				Content: content.String(),
+			},
+		},
 	}
 	return &final, nil
 }
