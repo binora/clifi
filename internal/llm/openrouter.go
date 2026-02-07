@@ -3,8 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 const openRouterBaseURL = "https://openrouter.ai/api/v1"
@@ -73,21 +71,17 @@ func NewOpenRouterProvider(apiKey string, model string) (*OpenRouterProvider, er
 		return nil, fmt.Errorf("API key is required")
 	}
 
-	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = openRouterBaseURL
-
-	client := openai.NewClientWithConfig(config)
-
 	if model == "" {
 		model = "anthropic/claude-3.5-sonnet"
 	}
 
+	base, err := NewOpenAIProvider(apiKey, model, openRouterBaseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OpenRouterProvider{
-		OpenAIProvider: &OpenAIProvider{
-			client:  client,
-			model:   model,
-			baseURL: openRouterBaseURL,
-		},
+		OpenAIProvider: base,
 	}, nil
 }
 

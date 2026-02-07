@@ -3,8 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 const veniceBaseURL = "https://api.venice.ai/api/v1"
@@ -49,21 +47,17 @@ func NewVeniceProvider(apiKey string, model string) (*VeniceProvider, error) {
 		return nil, fmt.Errorf("API key is required")
 	}
 
-	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = veniceBaseURL
-
-	client := openai.NewClientWithConfig(config)
-
 	if model == "" {
 		model = "llama-3.3-70b"
 	}
 
+	base, err := NewOpenAIProvider(apiKey, model, veniceBaseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	return &VeniceProvider{
-		OpenAIProvider: &OpenAIProvider{
-			client:  client,
-			model:   model,
-			baseURL: veniceBaseURL,
-		},
+		OpenAIProvider: base,
 	}, nil
 }
 

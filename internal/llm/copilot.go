@@ -3,8 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 const copilotBaseURL = "https://api.githubcopilot.com"
@@ -41,21 +39,17 @@ func NewCopilotProvider(accessToken string, model string) (*CopilotProvider, err
 		return nil, fmt.Errorf("access token is required")
 	}
 
-	config := openai.DefaultConfig(accessToken)
-	config.BaseURL = copilotBaseURL
-
-	client := openai.NewClientWithConfig(config)
-
 	if model == "" {
 		model = "gpt-4o"
 	}
 
+	base, err := NewOpenAIProvider(accessToken, model, copilotBaseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	return &CopilotProvider{
-		OpenAIProvider: &OpenAIProvider{
-			client:  client,
-			model:   model,
-			baseURL: copilotBaseURL,
-		},
+		OpenAIProvider: base,
 	}, nil
 }
 
