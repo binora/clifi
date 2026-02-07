@@ -400,39 +400,15 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		return "", fmt.Errorf("password required to sign")
 	}
 
-	signer, err := km.GetSigner(fromAddr, params.Password)
+	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", fmt.Errorf("failed to unlock signer: %w", err)
-	}
-
-	signed, err := signer.SignTransaction(unsigned, cfg.ChainID)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign tx: %w", err)
-	}
-
-	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := tr.chainClient.SendTransaction(sendCtx, params.Chain, signed); err != nil {
-		return "", fmt.Errorf("failed to send tx: %w", err)
+		return "", err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
 
-	wait := true
-	if params.Wait != nil {
-		wait = *params.Wait
-	}
-
-	if wait {
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash())
-		if err == nil && receipt != nil {
-			if rs, err := tr.receiptStore(); err == nil {
-				_ = rs.Upsert(params.Chain, receipt)
-			}
-			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
-		}
+	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
+		result += "\n" + line
 	}
 
 	return result, nil
@@ -529,37 +505,15 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		return "", fmt.Errorf("password required to sign")
 	}
 
-	signer, err := km.GetSigner(fromAddr, params.Password)
+	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", fmt.Errorf("failed to unlock signer: %w", err)
-	}
-	signed, err := signer.SignTransaction(unsigned, cfg.ChainID)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign tx: %w", err)
-	}
-
-	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := tr.chainClient.SendTransaction(sendCtx, params.Chain, signed); err != nil {
-		return "", fmt.Errorf("failed to send tx: %w", err)
+		return "", err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
 
-	wait := true
-	if params.Wait != nil {
-		wait = *params.Wait
-	}
-
-	if wait {
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
-			if rs, err := tr.receiptStore(); err == nil {
-				_ = rs.Upsert(params.Chain, receipt)
-			}
-			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
-		}
+	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
+		result += "\n" + line
 	}
 	return result, nil
 }
@@ -654,37 +608,15 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		return "", fmt.Errorf("password required to sign")
 	}
 
-	signer, err := km.GetSigner(fromAddr, params.Password)
+	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", fmt.Errorf("failed to unlock signer: %w", err)
-	}
-	signed, err := signer.SignTransaction(unsigned, cfg.ChainID)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign tx: %w", err)
-	}
-
-	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := tr.chainClient.SendTransaction(sendCtx, params.Chain, signed); err != nil {
-		return "", fmt.Errorf("failed to send tx: %w", err)
+		return "", err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
 
-	wait := true
-	if params.Wait != nil {
-		wait = *params.Wait
-	}
-
-	if wait {
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
-			if rs, err := tr.receiptStore(); err == nil {
-				_ = rs.Upsert(params.Chain, receipt)
-			}
-			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
-		}
+	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
+		result += "\n" + line
 	}
 	return result, nil
 }
