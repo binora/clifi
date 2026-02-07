@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -25,29 +26,34 @@ type ToolRegistry struct {
 	tools       []llm.Tool
 	handlers    map[string]llm.ToolHandler
 	chainClient *chain.Client
-	receipts    *ReceiptStore
+	dataDir     string
+
+	kmOnce sync.Once
+	km     *wallet.KeystoreManager
+	kmErr  error
+
+	receiptsOnce sync.Once
+	receipts     *ReceiptStore
+	receiptsErr  error
 }
 
 // NewToolRegistry creates a new tool registry with default crypto tools
 func NewToolRegistry() *ToolRegistry {
-	return NewToolRegistryWithDataDir("")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return NewToolRegistryWithDataDir("")
+	}
+	return NewToolRegistryWithDataDir(filepath.Join(home, ".clifi"))
 }
 
 // NewToolRegistryWithDataDir creates a new tool registry bound to a given data directory.
-// When dataDir is empty, it uses an in-memory receipt store to avoid touching disk in tests.
+// When dataDir is empty, wallet/receipt persistence is disabled and tools fall back to best-effort behavior.
 func NewToolRegistryWithDataDir(dataDir string) *ToolRegistry {
-	var rs *ReceiptStore
-	if dataDir == "" {
-		rs, _ = OpenReceiptStoreDSN(":memory:")
-	} else {
-		rs, _ = OpenReceiptStore(dataDir)
-	}
-
 	tr := &ToolRegistry{
 		tools:       llm.CryptoTools(),
 		handlers:    make(map[string]llm.ToolHandler),
 		chainClient: chain.NewClient(),
-		receipts:    rs,
+		dataDir:     dataDir,
 	}
 
 	// Register handlers
@@ -91,6 +97,29 @@ func (tr *ToolRegistry) Close() {
 }
 
 // Tool handler implementations
+
+func (tr *ToolRegistry) keystore() (*wallet.KeystoreManager, error) {
+	tr.kmOnce.Do(func() {
+		if tr.dataDir == "" {
+			tr.kmErr = fmt.Errorf("data dir not configured")
+			return
+		}
+		tr.km, tr.kmErr = wallet.NewKeystoreManager(tr.dataDir)
+	})
+	return tr.km, tr.kmErr
+}
+
+func (tr *ToolRegistry) receiptStore() (*ReceiptStore, error) {
+	tr.receiptsOnce.Do(func() {
+		// Default to in-memory store when no data dir is configured.
+		if tr.dataDir == "" {
+			tr.receipts, tr.receiptsErr = OpenReceiptStoreDSN(":memory:")
+			return
+		}
+		tr.receipts, tr.receiptsErr = OpenReceiptStore(tr.dataDir)
+	})
+	return tr.receipts, tr.receiptsErr
+}
 
 type getBalancesInput struct {
 	Address string   `json:"address"`
@@ -174,13 +203,7 @@ func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.Ra
 }
 
 func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMessage) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	dataDir := filepath.Join(home, ".clifi")
-	km, err := wallet.NewKeystoreManager(dataDir)
+	km, err := tr.keystore()
 	if err != nil {
 		return "", err
 	}
@@ -315,12 +338,7 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		return "", fmt.Errorf("amount_eth must be greater than zero")
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dataDir := filepath.Join(home, ".clifi")
-	km, err := wallet.NewKeystoreManager(dataDir)
+	km, err := tr.keystore()
 	if err != nil {
 		return "", err
 	}
@@ -410,8 +428,8 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		defer cancel()
 		receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash())
 		if err == nil && receipt != nil {
-			if tr.receipts != nil {
-				_ = tr.receipts.Upsert(params.Chain, receipt)
+			if rs, err := tr.receiptStore(); err == nil {
+				_ = rs.Upsert(params.Chain, receipt)
 			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
@@ -441,12 +459,7 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		return "", fmt.Errorf("amount_tokens is required")
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dataDir := filepath.Join(home, ".clifi")
-	km, err := wallet.NewKeystoreManager(dataDir)
+	km, err := tr.keystore()
 	if err != nil {
 		return "", err
 	}
@@ -542,8 +555,8 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
-			if tr.receipts != nil {
-				_ = tr.receipts.Upsert(params.Chain, receipt)
+			if rs, err := tr.receiptStore(); err == nil {
+				_ = rs.Upsert(params.Chain, receipt)
 			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
@@ -572,12 +585,7 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		return "", fmt.Errorf("amount_tokens is required")
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dataDir := filepath.Join(home, ".clifi")
-	km, err := wallet.NewKeystoreManager(dataDir)
+	km, err := tr.keystore()
 	if err != nil {
 		return "", err
 	}
@@ -672,8 +680,8 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, signed.Hash()); err == nil && receipt != nil {
-			if tr.receipts != nil {
-				_ = tr.receipts.Upsert(params.Chain, receipt)
+			if rs, err := tr.receiptStore(); err == nil {
+				_ = rs.Upsert(params.Chain, receipt)
 			}
 			result += fmt.Sprintf("\nReceipt status: %d, gas used: %d", receipt.Status, receipt.GasUsed)
 		}
@@ -709,8 +717,8 @@ func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMess
 		return "", err
 	}
 
-	if tr.receipts != nil {
-		if stored, err := tr.receipts.Get(params.Chain, params.TxHash); err == nil {
+	if rs, err := tr.receiptStore(); err == nil {
+		if stored, err := rs.Get(params.Chain, params.TxHash); err == nil {
 			return fmt.Sprintf("Receipt (cached):\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
 				stored.Chain, stored.TxHash, stored.Status, stored.GasUsed,
 			), nil
@@ -722,8 +730,8 @@ func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMess
 		return "", fmt.Errorf("receipt not found (tx may be pending): %w", err)
 	}
 
-	if tr.receipts != nil {
-		_ = tr.receipts.Upsert(params.Chain, receipt)
+	if rs, err := tr.receiptStore(); err == nil {
+		_ = rs.Upsert(params.Chain, receipt)
 	}
 
 	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
@@ -774,8 +782,8 @@ func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMes
 	if err != nil {
 		return "", fmt.Errorf("wait mined: %w", err)
 	}
-	if tr.receipts != nil {
-		_ = tr.receipts.Upsert(params.Chain, receipt)
+	if rs, err := tr.receiptStore(); err == nil {
+		_ = rs.Upsert(params.Chain, receipt)
 	}
 
 	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
