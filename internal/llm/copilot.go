@@ -1,17 +1,10 @@
 package llm
 
-import (
-	"context"
-	"fmt"
-)
+import "fmt"
 
 const copilotBaseURL = "https://api.githubcopilot.com"
 
-// CopilotProvider implements the Provider interface for GitHub Copilot
-// Uses OAuth authentication via GitHub device flow
-type CopilotProvider struct {
-	*OpenAIProvider
-}
+type CopilotProvider = OpenAICompatProvider
 
 // CopilotModels lists available Copilot models
 var CopilotModels = []Model{
@@ -39,73 +32,13 @@ func NewCopilotProvider(accessToken string, model string) (*CopilotProvider, err
 		return nil, fmt.Errorf("access token is required")
 	}
 
-	if model == "" {
-		model = "gpt-4o"
-	}
-
-	base, err := NewOpenAIProvider(accessToken, model, copilotBaseURL)
-	if err != nil {
-		return nil, err
-	}
-
-	return &CopilotProvider{
-		OpenAIProvider: base,
-	}, nil
+	return newOpenAICompatProvider(
+		accessToken,
+		model,
+		copilotBaseURL,
+		ProviderCopilot,
+		"GitHub Copilot",
+		CopilotModels,
+		"gpt-4o",
+	)
 }
-
-// ID returns the provider identifier
-func (p *CopilotProvider) ID() ProviderID {
-	return ProviderCopilot
-}
-
-// Name returns the human-readable provider name
-func (p *CopilotProvider) Name() string {
-	return "GitHub Copilot"
-}
-
-// Models returns available models
-func (p *CopilotProvider) Models() []Model {
-	return CopilotModels
-}
-
-// SetModel switches the active model after validating against Copilot's model list
-func (p *CopilotProvider) SetModel(modelID string) error {
-	if err := ValidateModelID(modelID, p.Models()); err != nil {
-		return err
-	}
-	p.model = modelID
-	return nil
-}
-
-// Chat delegates to OpenAIProvider
-func (p *CopilotProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	return p.OpenAIProvider.Chat(ctx, req)
-}
-
-// ChatWithToolResults delegates to OpenAIProvider
-func (p *CopilotProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
-	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
-}
-
-// DeviceCodeResponse represents the response from GitHub's device code endpoint
-type DeviceCodeResponse struct {
-	DeviceCode      string `json:"device_code"`
-	UserCode        string `json:"user_code"`
-	VerificationURI string `json:"verification_uri"`
-	ExpiresIn       int    `json:"expires_in"`
-	Interval        int    `json:"interval"`
-}
-
-// AccessTokenResponse represents the response from GitHub's access token endpoint
-type AccessTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	Scope        string `json:"scope"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	ExpiresIn    int    `json:"expires_in,omitempty"`
-	Error        string `json:"error,omitempty"`
-	ErrorDesc    string `json:"error_description,omitempty"`
-}
-
-// Note: OAuth device flow implementation is in internal/auth/oauth.go
-// This file only contains the provider implementation

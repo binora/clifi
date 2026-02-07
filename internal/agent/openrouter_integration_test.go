@@ -73,9 +73,7 @@ func TestOpenRouter_ListWalletsToolCall(t *testing.T) {
 		assert.Contains(t, result, acct.Address.Hex()[2:6])
 
 		// Continue with tool results
-		var trp llm.ToolResultsProvider = provider
-
-		next, err := trp.ChatWithToolResults(ctx, req, resp.ToolCalls, []llm.ToolResult{{
+		next, err := provider.ChatWithToolResults(ctx, req, resp.ToolCalls, []llm.ToolResult{{
 			ToolUseID: tc.ID,
 			Content:   result,
 			IsError:   false,

@@ -51,22 +51,22 @@ func NewToolRegistry() *ToolRegistry {
 func NewToolRegistryWithDataDir(dataDir string) *ToolRegistry {
 	tr := &ToolRegistry{
 		tools:       llm.CryptoTools(),
-		handlers:    make(map[string]llm.ToolHandler),
 		chainClient: chain.NewClient(),
 		dataDir:     dataDir,
 	}
 
-	// Register handlers
-	tr.handlers["get_balances"] = tr.handleGetBalances
-	tr.handlers["get_token_balance"] = tr.handleGetTokenBalance
-	tr.handlers["list_wallets"] = tr.handleListWallets
-	tr.handlers["get_chain_info"] = tr.handleGetChainInfo
-	tr.handlers["list_chains"] = tr.handleListChains
-	tr.handlers["send_native"] = tr.handleSendNative
-	tr.handlers["send_token"] = tr.handleSendToken
-	tr.handlers["approve_token"] = tr.handleApproveToken
-	tr.handlers["get_receipt"] = tr.handleGetReceipt
-	tr.handlers["wait_receipt"] = tr.handleWaitReceipt
+	tr.handlers = map[string]llm.ToolHandler{
+		"get_balances":      tr.handleGetBalances,
+		"get_token_balance": tr.handleGetTokenBalance,
+		"list_wallets":      tr.handleListWallets,
+		"get_chain_info":    tr.handleGetChainInfo,
+		"list_chains":       tr.handleListChains,
+		"send_native":       tr.handleSendNative,
+		"send_token":        tr.handleSendToken,
+		"approve_token":     tr.handleApproveToken,
+		"get_receipt":       tr.handleGetReceipt,
+		"wait_receipt":      tr.handleWaitReceipt,
+	}
 
 	return tr
 }
@@ -121,6 +121,20 @@ func (tr *ToolRegistry) receiptStore() (*ReceiptStore, error) {
 	return tr.receipts, tr.receiptsErr
 }
 
+func parseToolInput[T any](input json.RawMessage, out *T) error {
+	if err := json.Unmarshal(input, out); err != nil {
+		return fmt.Errorf("invalid input: %w", err)
+	}
+	return nil
+}
+
+func requireHexAddress(label, v string) (common.Address, error) {
+	if !common.IsHexAddress(v) {
+		return common.Address{}, fmt.Errorf("invalid %s: %s", label, v)
+	}
+	return common.HexToAddress(v), nil
+}
+
 type getBalancesInput struct {
 	Address string   `json:"address"`
 	Chains  []string `json:"chains"`
@@ -128,15 +142,14 @@ type getBalancesInput struct {
 
 func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getBalancesInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 
-	if !common.IsHexAddress(params.Address) {
-		return "", fmt.Errorf("invalid address: %s", params.Address)
+	address, err := requireHexAddress("address", params.Address)
+	if err != nil {
+		return "", err
 	}
-
-	address := common.HexToAddress(params.Address)
 
 	// Default to top 5 EVM chains by TVL/usage. These have reliable public RPCs.
 	// Users can override by specifying chains explicitly.
@@ -177,19 +190,18 @@ type getTokenBalanceInput struct {
 
 func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getTokenBalanceInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 
-	if !common.IsHexAddress(params.Address) {
-		return "", fmt.Errorf("invalid wallet address: %s", params.Address)
+	walletAddr, err := requireHexAddress("wallet address", params.Address)
+	if err != nil {
+		return "", err
 	}
-	if !common.IsHexAddress(params.Token) {
-		return "", fmt.Errorf("invalid token address: %s", params.Token)
+	tokenAddr, err := requireHexAddress("token address", params.Token)
+	if err != nil {
+		return "", err
 	}
-
-	walletAddr := common.HexToAddress(params.Address)
-	tokenAddr := common.HexToAddress(params.Token)
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -227,8 +239,8 @@ type getChainInfoInput struct {
 
 func (tr *ToolRegistry) handleGetChainInfo(ctx context.Context, input json.RawMessage) (string, error) {
 	var params getChainInfoInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 
 	config, err := tr.chainClient.GetChainConfig(params.Chain)
@@ -317,8 +329,8 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 	defer cancel()
 
 	var params sendNativeInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 	if params.To == "" || !common.IsHexAddress(params.To) {
 		return "", fmt.Errorf("invalid recipient address")
@@ -419,8 +431,8 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	defer cancel()
 
 	var params sendTokenInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 	if params.To == "" || !common.IsHexAddress(params.To) {
 		return "", fmt.Errorf("invalid recipient address")
@@ -523,8 +535,8 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	defer cancel()
 
 	var params approveTokenInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 	if params.Spender == "" || !common.IsHexAddress(params.Spender) {
 		return "", fmt.Errorf("invalid spender address")
@@ -631,8 +643,8 @@ func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMess
 	defer cancel()
 
 	var params getReceiptInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 	if params.Chain == "" {
 		return "", fmt.Errorf("chain is required")
@@ -679,8 +691,8 @@ type waitReceiptInput struct {
 
 func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMessage) (string, error) {
 	var params waitReceiptInput
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+	if err := parseToolInput(input, &params); err != nil {
+		return "", err
 	}
 	if params.Chain == "" {
 		return "", fmt.Errorf("chain is required")

@@ -344,11 +344,7 @@ func (a *Agent) executeToolCallsWithEvents(ctx context.Context, toolCalls []llm.
 
 // continueWithToolResults sends tool results to the provider and returns the next response.
 func (a *Agent) continueWithToolResults(ctx context.Context, req *llm.ChatRequest, toolCalls []llm.ToolCall, toolResults []llm.ToolResult) (*llm.ChatResponse, error) {
-	trp, ok := a.provider.(llm.ToolResultsProvider)
-	if !ok {
-		return nil, fmt.Errorf("provider does not support tool results")
-	}
-	response, err := trp.ChatWithToolResults(ctx, req, toolCalls, toolResults)
+	response, err := a.provider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
 	if err != nil {
 		return nil, fmt.Errorf("failed to continue conversation: %w", err)
 	}

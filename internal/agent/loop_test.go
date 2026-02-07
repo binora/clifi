@@ -34,6 +34,9 @@ func (p *testProvider) DefaultModel() string { return p.model }
 func (p *testProvider) Chat(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{Content: "ok"}, nil
 }
+func (p *testProvider) ChatWithToolResults(_ context.Context, _ *llm.ChatRequest, _ []llm.ToolCall, _ []llm.ToolResult) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{Content: "ok"}, nil
+}
 func (p *testProvider) SetModel(modelID string) error {
 	if err := llm.ValidateModelID(modelID, p.models); err != nil {
 		return err

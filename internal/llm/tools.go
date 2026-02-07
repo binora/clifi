@@ -12,12 +12,6 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
-// ToolResultsProvider is implemented by providers that support tool results.
-// All current providers implement this, allowing unified handling in the agent loop.
-type ToolResultsProvider interface {
-	ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error)
-}
-
 // ToolResult represents the result of a tool call
 type ToolResult struct {
 	ToolUseID string `json:"tool_use_id"`
@@ -27,30 +21,6 @@ type ToolResult struct {
 
 // ToolHandler is a function that handles a tool call
 type ToolHandler func(ctx context.Context, input json.RawMessage) (string, error)
-
-// NewTool creates a new tool definition
-func NewTool(name, description string, schema interface{}) Tool {
-	schemaBytes, _ := json.Marshal(schema)
-	return Tool{
-		Name:        name,
-		Description: description,
-		InputSchema: schemaBytes,
-	}
-}
-
-// Common JSON Schema types for tool definitions
-type JSONSchema struct {
-	Type       string              `json:"type"`
-	Properties map[string]Property `json:"properties,omitempty"`
-	Required   []string            `json:"required,omitempty"`
-}
-
-type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
-	Default     any      `json:"default,omitempty"`
-}
 
 // ToolChoice controls how the LLM may call tools.
 // Mode defaults to auto when zero-valued.

@@ -1,17 +1,12 @@
 package llm
 
 import (
-	"context"
 	"fmt"
 )
 
 const openRouterBaseURL = "https://openrouter.ai/api/v1"
 
-// OpenRouterProvider implements the Provider interface for OpenRouter
-// OpenRouter uses an OpenAI-compatible API and provides access to many models
-type OpenRouterProvider struct {
-	*OpenAIProvider
-}
+type OpenRouterProvider = OpenAICompatProvider
 
 // OpenRouterModels lists popular OpenRouter models
 var OpenRouterModels = []Model{
@@ -70,51 +65,13 @@ func NewOpenRouterProvider(apiKey string, model string) (*OpenRouterProvider, er
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
-
-	if model == "" {
-		model = "anthropic/claude-3.5-sonnet"
-	}
-
-	base, err := NewOpenAIProvider(apiKey, model, openRouterBaseURL)
-	if err != nil {
-		return nil, err
-	}
-
-	return &OpenRouterProvider{
-		OpenAIProvider: base,
-	}, nil
-}
-
-// ID returns the provider identifier
-func (p *OpenRouterProvider) ID() ProviderID {
-	return ProviderOpenRouter
-}
-
-// Name returns the human-readable provider name
-func (p *OpenRouterProvider) Name() string {
-	return "OpenRouter"
-}
-
-// Models returns available models
-func (p *OpenRouterProvider) Models() []Model {
-	return OpenRouterModels
-}
-
-// SetModel switches the active model after validating against OpenRouter's model list
-func (p *OpenRouterProvider) SetModel(modelID string) error {
-	if err := ValidateModelID(modelID, p.Models()); err != nil {
-		return err
-	}
-	p.model = modelID
-	return nil
-}
-
-// Chat delegates to OpenAIProvider
-func (p *OpenRouterProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	return p.OpenAIProvider.Chat(ctx, req)
-}
-
-// ChatWithToolResults delegates to OpenAIProvider
-func (p *OpenRouterProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
-	return p.OpenAIProvider.ChatWithToolResults(ctx, req, toolCalls, toolResults)
+	return newOpenAICompatProvider(
+		apiKey,
+		model,
+		openRouterBaseURL,
+		ProviderOpenRouter,
+		"OpenRouter",
+		OpenRouterModels,
+		"anthropic/claude-3.5-sonnet",
+	)
 }
