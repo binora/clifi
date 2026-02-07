@@ -18,17 +18,24 @@
 - [x] Encrypted keystore (create, import, list)
 - [x] Transaction signing (EIP-155)
 - [x] Message signing (EIP-191)
-- [x] EIP-712 typed data signing
+- [ ] EIP-712 typed data signing (currently a raw-hash stub; needs correct domain/struct hashing)
 - [x] Multi-chain RPC client with failover
 - [x] Native token balance queries
 - [x] ERC20 token balance queries
 - [x] 5 mainnet chains (Ethereum, Base, Arbitrum, Optimism, Polygon)
 - [x] 2 testnet chains (Sepolia, Base Sepolia)
 
+### Phase 3: Safe Signing (MVP)
+- [x] Send native tokens (preview + confirm gate)
+- [x] Send ERC20 tokens (preview + confirm gate)
+- [x] Token approvals (preview + confirm gate)
+- [x] Transaction receipt persistence (SQLite) + tools (`get_receipt`, `wait_receipt`)
+
 ### CLI + REPL
 - [x] Interactive REPL with Bubbletea TUI
 - [x] Slash commands: /help, /clear, /quit
 - [x] CLI commands: wallet, portfolio, auth
+- [x] In-app /model + /provider switching
 - [x] First-run setup wizard with provider + wallet onboarding
 - [x] Environment variable auto-detection
 
@@ -39,6 +46,7 @@
 - [x] GitHub Copilot OAuth support
 - [x] Multi-method auth per provider (API key vs OAuth)
 - [x] Default provider management
+- [x] `clifi auth test` diagnostics (real provider pings)
 
 ### DevEx
 - [x] Makefile (build, test, lint, fmt, tidy)
@@ -50,24 +58,19 @@
 
 ## In Progress
 
-### In-App Provider/Model Management
-- [ ] /model command - switch models within REPL
-- [ ] /provider command - switch providers within REPL
-- [ ] /auth command - connect new provider from REPL
-- [ ] /logout command - clear credentials, return to wizard
-- [ ] /status command - show current config
+### Reliability + Performance
+- [ ] OpenRouter + Claude tool calling reliability (ensure tool calls work and degrade gracefully when they don't)
+- [ ] Streaming for tool-call flows (and Anthropic) without breaking tool deltas
+- [ ] RPC timeouts/backoff + better surfacing of failover/latency
 
 ---
 
 ## Planned
 
-### Phase 3: Safe Signing
-- [ ] Send native tokens (ETH, MATIC)
-- [ ] Send ERC20 tokens
-- [ ] Token approvals (ERC20 approve)
-- [ ] Safety confirmation gates (show params, require explicit yes)
-- [ ] Gas estimation and fee display
-- [ ] Transaction receipt tracking
+### Safe Signing (Polish)
+- [ ] Gas estimation and fee display improvements
+- [ ] Nonce management, retries/backoff, better error messages
+- [ ] Safer policy defaults (spend limits/allowlists) + explainability
 
 ### Phase 4: Swap Primitive
 - [ ] DEX integration (Uniswap, etc.)
