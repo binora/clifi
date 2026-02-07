@@ -406,6 +406,14 @@ func mapToolChoice(choice ToolChoice, hasTools bool) any {
 		return nil
 	}
 
+	// "auto" is the default behavior when tools are present, so omit tool_choice
+	// unless the caller is explicitly overriding defaults. This improves
+	// compatibility across OpenAI-compatible gateways (e.g., OpenRouter) while
+	// also shrinking request payloads.
+	if choice.Mode == "" || choice.Mode == ToolChoiceAuto {
+		return nil
+	}
+
 	switch choice.Mode {
 	case ToolChoiceNone:
 		return "none"
