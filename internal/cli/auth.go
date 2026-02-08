@@ -331,40 +331,25 @@ func pingProvider(ctx context.Context, providerID llm.ProviderID, apiKey string)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	switch providerID {
-	case llm.ProviderOpenAI:
-		p, err := llm.NewOpenAIProvider(apiKey, "", "")
-		if err != nil {
-			return err
-		}
-		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
-		return err
+	type ctor func(ctx context.Context, key string) (llm.Provider, error)
+	ctors := map[llm.ProviderID]ctor{
+		llm.ProviderOpenAI:     func(ctx context.Context, key string) (llm.Provider, error) { return llm.NewOpenAIProvider(key, "", "") },
+		llm.ProviderOpenRouter: func(ctx context.Context, key string) (llm.Provider, error) { return llm.NewOpenRouterProvider(key, "") },
+		llm.ProviderAnthropic:  func(ctx context.Context, key string) (llm.Provider, error) { return llm.NewAnthropicProvider(key, "") },
+		llm.ProviderGemini: func(ctx context.Context, key string) (llm.Provider, error) {
+			return llm.NewGeminiProvider(ctx, key, "")
+		},
+	}
 
-	case llm.ProviderOpenRouter:
-		p, err := llm.NewOpenRouterProvider(apiKey, "")
-		if err != nil {
-			return err
-		}
-		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
-		return err
-
-	case llm.ProviderAnthropic:
-		p, err := llm.NewAnthropicProvider(apiKey, "")
-		if err != nil {
-			return err
-		}
-		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
-		return err
-
-	case llm.ProviderGemini:
-		p, err := llm.NewGeminiProvider(ctx, apiKey, "")
-		if err != nil {
-			return err
-		}
-		_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
-		return err
-
-	default:
+	newProvider, ok := ctors[providerID]
+	if !ok {
 		return fmt.Errorf("provider %s not supported for auth test yet", providerID)
 	}
+
+	p, err := newProvider(ctx, apiKey)
+	if err != nil {
+		return err
+	}
+	_, err = p.Chat(ctx, &llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}, MaxTokens: 1})
+	return err
 }
