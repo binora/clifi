@@ -114,47 +114,42 @@ func (p *OpenAIProvider) SetModel(modelID string) error {
 	return nil
 }
 
-// Chat sends a message and returns the response
-func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+func (p *OpenAIProvider) modelAndMaxTokens(req *ChatRequest) (string, int) {
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
-
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 4096
 	}
+	return model, maxTokens
+}
 
-	// Convert messages to OpenAI format
-	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
-
-	// Add system prompt as first message
+func openaiBaseMessages(req *ChatRequest) []openai.ChatCompletionMessage {
+	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
 	if req.SystemPrompt != "" {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: req.SystemPrompt,
-		})
+		msgs = append(msgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt})
 	}
-
 	for _, msg := range req.Messages {
 		role := openai.ChatMessageRoleUser
 		if msg.Role == "assistant" {
 			role = openai.ChatMessageRoleAssistant
 		}
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    role,
-			Content: msg.Content,
-		})
+		msgs = append(msgs, openai.ChatCompletionMessage{Role: role, Content: msg.Content})
 	}
+	return msgs
+}
 
-	// Convert tools to OpenAI format
-	var tools []openai.Tool
-	for _, tool := range req.Tools {
-		var params map[string]interface{}
-		_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
-
-		tools = append(tools, openai.Tool{
+func openaiTools(tools []Tool) []openai.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]openai.Tool, 0, len(tools))
+	for _, tool := range tools {
+		var params map[string]any
+		_ = json.Unmarshal(tool.InputSchema, &params) // already validated at registration
+		out = append(out, openai.Tool{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        tool.Name,
@@ -163,6 +158,36 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 			},
 		})
 	}
+	return out
+}
+
+func parseOpenAIResponse(resp *openai.ChatCompletionResponse) (*ChatResponse, error) {
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := resp.Choices[0]
+	out := &ChatResponse{
+		Content:    choice.Message.Content,
+		StopReason: string(choice.FinishReason),
+		Usage: Usage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
+	for _, tc := range choice.Message.ToolCalls {
+		if tc.Type == openai.ToolTypeFunction {
+			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Input: json.RawMessage(tc.Function.Arguments)})
+		}
+	}
+	return out, nil
+}
+
+// Chat sends a message and returns the response
+func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	model, maxTokens := p.modelAndMaxTokens(req)
+	messages := openaiBaseMessages(req)
+	tools := openaiTools(req.Tools)
 
 	openaiReq := openai.ChatCompletionRequest{
 		Model:     model,
@@ -193,32 +218,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		resp = &nonStream
 	}
 
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-
-	choice := resp.Choices[0]
-	response := &ChatResponse{
-		Content:    choice.Message.Content,
-		StopReason: string(choice.FinishReason),
-		Usage: Usage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		},
-	}
-
-	// Parse tool calls
-	for _, tc := range choice.Message.ToolCalls {
-		if tc.Type == openai.ToolTypeFunction {
-			response.ToolCalls = append(response.ToolCalls, ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Function.Name,
-				Input: json.RawMessage(tc.Function.Arguments),
-			})
-		}
-	}
-
-	return response, nil
+	return parseOpenAIResponse(resp)
 }
 
 // streamChat runs streaming when enabled to reduce latency; falls back to non-stream if unsupported.
@@ -279,37 +279,8 @@ func (p *OpenAIProvider) streamChat(ctx context.Context, req openai.ChatCompleti
 
 // ChatWithToolResults continues a conversation with tool results
 func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = p.model
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 4096
-	}
-
-	// Build messages including tool results
-	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+len(toolResults)+1)
-
-	// Add system prompt
-	if req.SystemPrompt != "" {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: req.SystemPrompt,
-		})
-	}
-
-	for _, msg := range req.Messages {
-		role := openai.ChatMessageRoleUser
-		if msg.Role == "assistant" {
-			role = openai.ChatMessageRoleAssistant
-		}
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    role,
-			Content: msg.Content,
-		})
-	}
+	model, maxTokens := p.modelAndMaxTokens(req)
+	messages := openaiBaseMessages(req)
 
 	// Add assistant message with tool_calls (only if there are tool calls)
 	if len(toolCalls) > 0 {
@@ -338,21 +309,7 @@ func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 		})
 	}
 
-	// Convert tools to OpenAI format
-	var tools []openai.Tool
-	for _, tool := range req.Tools {
-		var params map[string]interface{}
-		_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
-
-		tools = append(tools, openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  params,
-			},
-		})
-	}
+	tools := openaiTools(req.Tools)
 
 	openaiReq := openai.ChatCompletionRequest{
 		Model:     model,
@@ -372,32 +329,7 @@ func (p *OpenAIProvider) ChatWithToolResults(ctx context.Context, req *ChatReque
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat completion: %w", err)
 	}
-
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-
-	choice := resp.Choices[0]
-	response := &ChatResponse{
-		Content:    choice.Message.Content,
-		StopReason: string(choice.FinishReason),
-		Usage: Usage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		},
-	}
-
-	for _, tc := range choice.Message.ToolCalls {
-		if tc.Type == openai.ToolTypeFunction {
-			response.ToolCalls = append(response.ToolCalls, ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Function.Name,
-				Input: json.RawMessage(tc.Function.Arguments),
-			})
-		}
-	}
-
-	return response, nil
+	return parseOpenAIResponse(&resp)
 }
 
 func mapToolChoice(choice ToolChoice, hasTools bool) any {
