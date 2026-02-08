@@ -101,42 +101,67 @@ func (p *AnthropicProvider) SetModel(modelID string) error {
 	return nil
 }
 
-// Chat sends a message and returns the response
-func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+func (p *AnthropicProvider) modelAndMaxTokens(req *ChatRequest) (string, int) {
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
-
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 4096
 	}
+	return model, maxTokens
+}
 
-	// Convert messages to Anthropic format
-	anthropicMessages := make([]anthropic.Message, len(req.Messages))
-	for i, msg := range req.Messages {
+func anthropicBaseMessages(msgs []Message) []anthropic.Message {
+	out := make([]anthropic.Message, len(msgs))
+	for i, msg := range msgs {
 		role := anthropic.RoleUser
 		if msg.Role == "assistant" {
 			role = anthropic.RoleAssistant
 		}
-		anthropicMessages[i] = anthropic.Message{
-			Role: role,
-			Content: []anthropic.MessageContent{
-				anthropic.NewTextMessageContent(msg.Content),
-			},
-		}
+		out[i] = anthropic.Message{Role: role, Content: []anthropic.MessageContent{anthropic.NewTextMessageContent(msg.Content)}}
 	}
+	return out
+}
 
-	// Convert tools to Anthropic format
-	anthropicTools := make([]anthropic.ToolDefinition, len(req.Tools))
-	for i, tool := range req.Tools {
-		anthropicTools[i] = anthropic.ToolDefinition{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
+func anthropicToolDefs(tools []Tool) []anthropic.ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]anthropic.ToolDefinition, len(tools))
+	for i, tool := range tools {
+		out[i] = anthropic.ToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema}
+	}
+	return out
+}
+
+func parseAnthropicResponse(resp *anthropic.MessagesResponse) *ChatResponse {
+	out := &ChatResponse{
+		StopReason: string(resp.StopReason),
+		Usage: Usage{
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
+		},
+	}
+	for _, content := range resp.Content {
+		switch content.Type {
+		case anthropic.MessagesContentTypeText:
+			if content.Text != nil {
+				out.Content = *content.Text
+			}
+		case anthropic.MessagesContentTypeToolUse:
+			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: content.ID, Name: content.Name, Input: content.Input})
 		}
 	}
+	return out
+}
+
+// Chat sends a message and returns the response
+func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	model, maxTokens := p.modelAndMaxTokens(req)
+	anthropicMessages := anthropicBaseMessages(req.Messages)
+	anthropicTools := anthropicToolDefs(req.Tools)
 
 	anthropicReq := anthropic.MessagesRequest{
 		Model:     anthropic.Model(model),
@@ -153,61 +178,13 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message: %w", err)
 	}
-
-	response := &ChatResponse{
-		StopReason: string(resp.StopReason),
-		Usage: Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-		},
-	}
-
-	// Parse response content
-	for _, content := range resp.Content {
-		switch content.Type {
-		case anthropic.MessagesContentTypeText:
-			if content.Text != nil {
-				response.Content = *content.Text
-			}
-		case anthropic.MessagesContentTypeToolUse:
-			response.ToolCalls = append(response.ToolCalls, ToolCall{
-				ID:    content.ID,
-				Name:  content.Name,
-				Input: content.Input,
-			})
-		}
-	}
-
-	return response, nil
+	return parseAnthropicResponse(&resp), nil
 }
 
 // ChatWithToolResults continues a conversation with tool results
 func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = p.model
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 4096
-	}
-
-	// Build the complete conversation including tool results
-	anthropicMessages := make([]anthropic.Message, 0, len(req.Messages)+1)
-
-	for _, msg := range req.Messages {
-		role := anthropic.RoleUser
-		if msg.Role == "assistant" {
-			role = anthropic.RoleAssistant
-		}
-		anthropicMessages = append(anthropicMessages, anthropic.Message{
-			Role: role,
-			Content: []anthropic.MessageContent{
-				anthropic.NewTextMessageContent(msg.Content),
-			},
-		})
-	}
+	model, maxTokens := p.modelAndMaxTokens(req)
+	anthropicMessages := append([]anthropic.Message(nil), anthropicBaseMessages(req.Messages)...)
 
 	// Add assistant message with tool_use blocks (only if there are tool calls)
 	if len(toolCalls) > 0 {
@@ -233,15 +210,7 @@ func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRe
 		})
 	}
 
-	// Convert tools to Anthropic format
-	anthropicTools := make([]anthropic.ToolDefinition, len(req.Tools))
-	for i, tool := range req.Tools {
-		anthropicTools[i] = anthropic.ToolDefinition{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-		}
-	}
+	anthropicTools := anthropicToolDefs(req.Tools)
 
 	anthropicReq := anthropic.MessagesRequest{
 		Model:     anthropic.Model(model),
@@ -258,29 +227,5 @@ func (p *AnthropicProvider) ChatWithToolResults(ctx context.Context, req *ChatRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message: %w", err)
 	}
-
-	response := &ChatResponse{
-		StopReason: string(resp.StopReason),
-		Usage: Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-		},
-	}
-
-	for _, content := range resp.Content {
-		switch content.Type {
-		case anthropic.MessagesContentTypeText:
-			if content.Text != nil {
-				response.Content = *content.Text
-			}
-		case anthropic.MessagesContentTypeToolUse:
-			response.ToolCalls = append(response.ToolCalls, ToolCall{
-				ID:    content.ID,
-				Name:  content.Name,
-				Input: content.Input,
-			})
-		}
-	}
-
-	return response, nil
+	return parseAnthropicResponse(&resp), nil
 }
