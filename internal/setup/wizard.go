@@ -146,6 +146,17 @@ func withCurrent(items []ui.SelectorItem, id string) []ui.SelectorItem {
 	return out
 }
 
+func secretInput(placeholder string, width, limit int) textinput.Model {
+	in := textinput.New()
+	in.Prompt = ""
+	in.Placeholder = placeholder
+	in.EchoMode = textinput.EchoPassword
+	in.EchoCharacter = '•'
+	in.CharLimit = limit
+	in.Width = width
+	return in
+}
+
 // NewWizard creates a new wizard model
 func NewWizard(dataDir string) *WizardModel {
 	status, _ := DetectSetupStatus(dataDir)
@@ -159,31 +170,9 @@ func NewWizard(dataDir string) *WizardModel {
 	prog := progress.New(progress.WithDefaultGradient())
 	prog.Width = 40
 
-	// API key input
-	apiInput := textinput.New()
-	apiInput.Prompt = ""
-	apiInput.Placeholder = "Paste your API key here..."
-	apiInput.EchoMode = textinput.EchoPassword
-	apiInput.EchoCharacter = '•'
-	apiInput.CharLimit = 200
-	apiInput.Width = 50
-
-	// Password inputs
-	passInput := textinput.New()
-	passInput.Prompt = ""
-	passInput.Placeholder = "Enter password (8+ chars)"
-	passInput.EchoMode = textinput.EchoPassword
-	passInput.EchoCharacter = '•'
-	passInput.CharLimit = 100
-	passInput.Width = 40
-
-	confirmInput := textinput.New()
-	confirmInput.Prompt = ""
-	confirmInput.Placeholder = "Confirm password"
-	confirmInput.EchoMode = textinput.EchoPassword
-	confirmInput.EchoCharacter = '•'
-	confirmInput.CharLimit = 100
-	confirmInput.Width = 40
+	apiInput := secretInput("Paste your API key here...", 50, 200)
+	passInput := secretInput("Enter password (8+ chars)", 40, 100)
+	confirmInput := secretInput("Confirm password", 40, 100)
 
 	currentProvider := ""
 	if status.HasProvider {
