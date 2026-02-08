@@ -148,6 +148,29 @@ func kvBlock(title string, items ...KVItem) UIBlock {
 	}
 }
 
+func requireChainTx(tr *ToolRegistry, chainName, txHash string) (common.Hash, error) {
+	if chainName == "" {
+		return common.Hash{}, fmt.Errorf("chain is required")
+	}
+	if txHash == "" {
+		return common.Hash{}, fmt.Errorf("tx_hash is required")
+	}
+	if _, err := tr.chainClient.GetChainConfig(chainName); err != nil {
+		return common.Hash{}, fmt.Errorf("unknown chain: %s", chainName)
+	}
+	return parseTxHash(txHash)
+}
+
+func receiptOutput(title, chainName, txHash string, status, gasUsed uint64) ToolOutput {
+	text := fmt.Sprintf("%s:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n", title, chainName, txHash, status, gasUsed)
+	return ToolOutput{Text: text, Blocks: []UIBlock{kvBlock(title,
+		KVItem{Key: "Chain", Value: chainName},
+		KVItem{Key: "Tx", Value: txHash},
+		KVItem{Key: "Status", Value: fmt.Sprintf("%d", status)},
+		KVItem{Key: "Gas used", Value: fmt.Sprintf("%d", gasUsed)},
+	)}}
+}
+
 type getBalancesInput struct {
 	Address string   `json:"address"`
 	Chains  []string `json:"chains"`
@@ -620,33 +643,14 @@ func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMess
 	if err := parseToolInput(input, &params); err != nil {
 		return ToolOutput{}, err
 	}
-	if params.Chain == "" {
-		return ToolOutput{}, fmt.Errorf("chain is required")
-	}
-	if params.TxHash == "" {
-		return ToolOutput{}, fmt.Errorf("tx_hash is required")
-	}
-	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
-		return ToolOutput{}, fmt.Errorf("unknown chain: %s", params.Chain)
-	}
-
-	txHash, err := parseTxHash(params.TxHash)
+	txHash, err := requireChainTx(tr, params.Chain, params.TxHash)
 	if err != nil {
 		return ToolOutput{}, err
 	}
 
 	if rs, err := tr.receiptStore(); err == nil {
 		if stored, err := rs.Get(params.Chain, params.TxHash); err == nil {
-			text := fmt.Sprintf("Receipt (cached):\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
-				stored.Chain, stored.TxHash, stored.Status, stored.GasUsed,
-			)
-			block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt (cached)", Items: []KVItem{
-				{Key: "Chain", Value: stored.Chain},
-				{Key: "Tx", Value: stored.TxHash},
-				{Key: "Status", Value: fmt.Sprintf("%d", stored.Status)},
-				{Key: "Gas used", Value: fmt.Sprintf("%d", stored.GasUsed)},
-			}}}
-			return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+			return receiptOutput("Receipt (cached)", stored.Chain, stored.TxHash, stored.Status, stored.GasUsed), nil
 		}
 	}
 
@@ -659,16 +663,7 @@ func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMess
 		_ = rs.Upsert(params.Chain, receipt)
 	}
 
-	text := fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
-		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
-	)
-	block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt", Items: []KVItem{
-		{Key: "Chain", Value: params.Chain},
-		{Key: "Tx", Value: params.TxHash},
-		{Key: "Status", Value: fmt.Sprintf("%d", receipt.Status)},
-		{Key: "Gas used", Value: fmt.Sprintf("%d", receipt.GasUsed)},
-	}}}
-	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+	return receiptOutput("Receipt", params.Chain, params.TxHash, receipt.Status, receipt.GasUsed), nil
 }
 
 type waitReceiptInput struct {
@@ -682,16 +677,7 @@ func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMes
 	if err := parseToolInput(input, &params); err != nil {
 		return ToolOutput{}, err
 	}
-	if params.Chain == "" {
-		return ToolOutput{}, fmt.Errorf("chain is required")
-	}
-	if params.TxHash == "" {
-		return ToolOutput{}, fmt.Errorf("tx_hash is required")
-	}
-	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
-		return ToolOutput{}, fmt.Errorf("unknown chain: %s", params.Chain)
-	}
-	txHash, err := parseTxHash(params.TxHash)
+	txHash, err := requireChainTx(tr, params.Chain, params.TxHash)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -717,17 +703,7 @@ func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMes
 	if rs, err := tr.receiptStore(); err == nil {
 		_ = rs.Upsert(params.Chain, receipt)
 	}
-
-	text := fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
-		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
-	)
-	block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt", Items: []KVItem{
-		{Key: "Chain", Value: params.Chain},
-		{Key: "Tx", Value: params.TxHash},
-		{Key: "Status", Value: fmt.Sprintf("%d", receipt.Status)},
-		{Key: "Gas used", Value: fmt.Sprintf("%d", receipt.GasUsed)},
-	}}}
-	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+	return receiptOutput("Receipt", params.Chain, params.TxHash, receipt.Status, receipt.GasUsed), nil
 }
 
 func parseTxHash(v string) (common.Hash, error) {
