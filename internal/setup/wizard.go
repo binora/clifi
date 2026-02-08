@@ -31,6 +31,15 @@ const (
 
 const totalSteps = 3 // Provider, Wallet, Complete
 
+var providerAPIKeyURLs = map[llm.ProviderID]string{
+	llm.ProviderAnthropic:  "console.anthropic.com",
+	llm.ProviderOpenAI:     "platform.openai.com/api-keys",
+	llm.ProviderGemini:     "aistudio.google.com/apikey",
+	llm.ProviderVenice:     "venice.ai",
+	llm.ProviderCopilot:    "Run: gh auth token",
+	llm.ProviderOpenRouter: "openrouter.ai/settings/keys",
+}
+
 // SetupResult contains the result of the setup wizard
 type SetupResult struct {
 	ProviderID    llm.ProviderID
@@ -298,7 +307,7 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.apiKeyInput.Reset()
 				m.keyError = ""
 				// If we skipped auth selection (single method), go back to provider select.
-				if !m.providerHasAuthChoice() {
+				if len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) <= 1 {
 					m.step = StepProviderSelect
 				} else {
 					m.step = StepAuthMethod
@@ -308,12 +317,12 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyEnter {
 				return m.updateProviderKey(msg)
 			}
-		// Fall through to let input update happen
+			// Fall through to let input update happen
 
 		case StepOAuthWaiting:
 			if msg.Type == tea.KeyEsc {
 				m.oauthError = ""
-				if !m.providerHasAuthChoice() {
+				if len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) <= 1 {
 					m.step = StepProviderSelect
 				} else {
 					m.step = StepAuthMethod
@@ -552,29 +561,6 @@ func (m WizardModel) updateProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m WizardModel) providerHasAuthChoice() bool {
-	return len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) > 1
-}
-
-func apiKeyURL(provider llm.ProviderID) string {
-	switch provider {
-	case llm.ProviderAnthropic:
-		return "console.anthropic.com"
-	case llm.ProviderOpenAI:
-		return "platform.openai.com/api-keys"
-	case llm.ProviderGemini:
-		return "aistudio.google.com/apikey"
-	case llm.ProviderVenice:
-		return "venice.ai"
-	case llm.ProviderCopilot:
-		return "Run: gh auth token"
-	case llm.ProviderOpenRouter:
-		return "openrouter.ai/settings/keys"
-	default:
-		return ""
-	}
-}
-
 func (m WizardModel) updateWalletChoice(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	_, cmd := m.walletSelector.Update(msg)
 	if cmd != nil {
@@ -762,7 +748,7 @@ func (m WizardModel) viewProviderKey() string {
 	b.WriteString(TitleStyle.Render(fmt.Sprintf("  Enter %s API Key", providerName)))
 	b.WriteString("\n\n")
 
-	if apiURL := apiKeyURL(m.selectedProvider); apiURL != "" {
+	if apiURL := providerAPIKeyURLs[m.selectedProvider]; apiURL != "" {
 		b.WriteString(SubtitleStyle.Render(fmt.Sprintf("  Get your key at: %s\n\n", apiURL)))
 	}
 
