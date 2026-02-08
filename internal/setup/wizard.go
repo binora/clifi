@@ -589,23 +589,18 @@ func (m WizardModel) View() string {
 		b.WriteString("\n")
 	}
 
-	switch m.step {
-	case StepWelcome:
-		b.WriteString(m.viewWelcome())
-	case StepProviderSelect:
-		b.WriteString(m.viewProviderSelect())
-	case StepAuthMethod:
-		b.WriteString(m.viewAuthMethod())
-	case StepProviderKey:
-		b.WriteString(m.viewProviderKey())
-	case StepOAuthWaiting:
-		b.WriteString(m.viewOAuthWaiting())
-	case StepWalletChoice:
-		b.WriteString(m.viewWalletChoice())
-	case StepWalletPassword:
-		b.WriteString(m.viewWalletPassword())
-	case StepComplete:
-		b.WriteString(m.viewComplete())
+	view := map[WizardStep]func() string{
+		StepWelcome:        m.viewWelcome,
+		StepProviderSelect: m.viewProviderSelect,
+		StepAuthMethod:     m.viewAuthMethod,
+		StepProviderKey:    m.viewProviderKey,
+		StepOAuthWaiting:   m.viewOAuthWaiting,
+		StepWalletChoice:   m.viewWalletChoice,
+		StepWalletPassword: m.viewWalletPassword,
+		StepComplete:       m.viewComplete,
+	}[m.step]
+	if view != nil {
+		b.WriteString(view())
 	}
 
 	return b.String()
