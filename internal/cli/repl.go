@@ -106,6 +106,29 @@ func (m *model) addToolResult(name, content string, blocks []agent.UIBlock) {
 	m.addMessage(chatMessage{kind: "tool_result", toolName: name, content: content, blocks: blocks})
 }
 
+func (m model) done(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	m.updateViewport()
+	return m, cmd
+}
+
+func (m model) sys(content string) (tea.Model, tea.Cmd) {
+	m.addSystem(content)
+	return m.done(nil)
+}
+
+func (m model) sysf(format string, args ...any) (tea.Model, tea.Cmd) {
+	return m.sys(fmt.Sprintf(format, args...))
+}
+
+func (m model) fail(content string) (tea.Model, tea.Cmd) {
+	m.addError(content)
+	return m.done(nil)
+}
+
+func (m model) failf(format string, args ...any) (tea.Model, tea.Cmd) {
+	return m.fail(fmt.Sprintf(format, args...))
+}
+
 // responseMsg is sent when the agent responds
 type responseMsg struct {
 	events []agent.ChatEvent
@@ -485,8 +508,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		if m.agent != nil {
 			m.agent.Reset()
 		}
-		m.updateViewport()
-		return m, nil
+		return m.done(nil)
 
 	case "/model":
 		return m.handleModelCommand(arg)
@@ -506,15 +528,10 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		for _, cmd := range commands {
 			helpText.WriteString(fmt.Sprintf("  %-12s %s\n", cmd.name, cmd.description))
 		}
-
-		m.addSystem(helpText.String())
-		m.updateViewport()
-		return m, nil
+		return m.sys(helpText.String())
 
 	default:
-		m.addErrorf("Unknown command: %s. Type /help for commands.", cmd)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Unknown command: %s. Type /help for commands.", cmd)
 	}
 }
 
@@ -527,29 +544,22 @@ func (m model) handleLogout() (tea.Model, tea.Cmd) {
 	}
 
 	m.addSystem("Credentials cleared. Restart clifi to set up again.")
-	m.updateViewport()
 	m.quitting = true
-	return m, tea.Quit
+	return m.done(tea.Quit)
 }
 
 // handleModelCommand shows model selector or switches directly
 func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
-		m.addError("Agent not initialized.")
-		m.updateViewport()
-		return m, nil
+		return m.fail("Agent not initialized.")
 	}
 
 	if modelID != "" {
 		if err := m.agent.SetModel(modelID); err != nil {
-			m.addErrorf("Failed to switch model: %v", err)
-			m.updateViewport()
-			return m, nil
+			return m.failf("Failed to switch model: %v", err)
 		}
 
-		m.addSystem(fmt.Sprintf("Switched to %s. Conversation cleared.", modelID))
-		m.updateViewport()
-		return m, nil
+		return m.sysf("Switched to %s. Conversation cleared.", modelID)
 	}
 
 	current := m.agent.CurrentModel()
@@ -577,16 +587,12 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 // handleProviderCommand lists or switches providers
 func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
-		m.addError("Agent not initialized.")
-		m.updateViewport()
-		return m, nil
+		return m.fail("Agent not initialized.")
 	}
 
 	manager, err := getAuthManager()
 	if err != nil {
-		m.addErrorf("Failed to load auth manager: %v", err)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Failed to load auth manager: %v", err)
 	}
 
 	if providerID == "" {
@@ -609,37 +615,27 @@ func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
 		}
 		builder.WriteString(fmt.Sprintf("\nCurrent: %s\nDefault: %s\nUse /provider <id> to switch.", current, defaultProvider))
 
-		m.addSystem(builder.String())
-		m.updateViewport()
-		return m, nil
+		return m.sys(builder.String())
 	}
 
 	target := llm.ProviderID(strings.ToLower(providerID))
 	if !manager.HasCredential(target) {
-		m.addErrorf("Provider %s is not connected. Use /auth %s <api_key> or set env var.", target, target)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Provider %s is not connected. Use /auth %s <api_key> or set env var.", target, target)
 	}
 
 	if err := m.agent.SetProvider(target); err != nil {
-		m.addErrorf("Failed to switch provider: %v", err)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Failed to switch provider: %v", err)
 	}
 
 	_ = manager.SetDefaultProvider(target)
 
-	m.addSystem(fmt.Sprintf("Switched provider to %s (%s). Conversation cleared.", target, m.agent.ProviderName()))
-	m.updateViewport()
-	return m, nil
+	return m.sysf("Switched provider to %s (%s). Conversation cleared.", target, m.agent.ProviderName())
 }
 
 // handleAuthCommand stores an API key for a provider (API-key flows only)
 func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 	if arg == "" {
-		m.addError("Usage: /auth <provider> <api_key>")
-		m.updateViewport()
-		return m, nil
+		return m.fail("Usage: /auth <provider> <api_key>")
 	}
 
 	parts := strings.Fields(arg)
@@ -655,16 +651,12 @@ func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if !valid {
-		m.addErrorf("Unknown provider: %s", target)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Unknown provider: %s", target)
 	}
 
 	// Copilot OAuth not supported in REPL
 	if target == llm.ProviderCopilot {
-		m.addError("GitHub Copilot requires OAuth. Run: clifi auth connect copilot --oauth")
-		m.updateViewport()
-		return m, nil
+		return m.fail("GitHub Copilot requires OAuth. Run: clifi auth connect copilot --oauth")
 	}
 
 	key := ""
@@ -677,38 +669,32 @@ func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	if key == "" {
-		m.addErrorf("Missing API key. Usage: /auth %s <api_key> or set %s env var.", target, llm.EnvVarForProvider(target))
-		m.updateViewport()
-		return m, nil
+		return m.failf("Missing API key. Usage: /auth %s <api_key> or set %s env var.", target, llm.EnvVarForProvider(target))
 	}
 
 	manager, err := getAuthManager()
 	if err != nil {
-		m.addErrorf("Failed to load auth manager: %v", err)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Failed to load auth manager: %v", err)
 	}
 
 	if err := manager.SetAPIKey(target, key); err != nil {
-		m.addErrorf("Failed to save credential: %v", err)
-		m.updateViewport()
-		return m, nil
+		return m.failf("Failed to save credential: %v", err)
 	}
 
 	_ = manager.SetDefaultProvider(target)
 
-	m.addSystem(fmt.Sprintf("Connected provider %s. Use /provider %s to switch.", target, target))
-	m.updateViewport()
-	return m, nil
+	return m.sysf("Connected provider %s. Use /provider %s to switch.", target, target)
 }
 
 // handleStatusCommand shows current provider/model and wallet info
 func (m model) handleStatusCommand() (tea.Model, tea.Cmd) {
 	currentProvider := ""
 	currentModel := ""
+	providerName := "not initialized"
 	if m.agent != nil {
 		currentProvider = string(m.agent.CurrentProviderID())
 		currentModel = m.agent.CurrentModel()
+		providerName = m.agent.ProviderName()
 	}
 
 	manager, err := getAuthManager()
@@ -735,21 +721,14 @@ func (m model) handleStatusCommand() (tea.Model, tea.Cmd) {
 
 	var builder strings.Builder
 	builder.WriteString("Status:\n")
-	builder.WriteString(fmt.Sprintf("- Provider: %s (%s)\n", currentProvider, func() string {
-		if m.agent != nil {
-			return m.agent.ProviderName()
-		}
-		return "not initialized"
-	}()))
+	builder.WriteString(fmt.Sprintf("- Provider: %s (%s)\n", currentProvider, providerName))
 	builder.WriteString(fmt.Sprintf("- Model: %s\n", currentModel))
 	builder.WriteString(fmt.Sprintf("- Connected providers: %s\n", strings.Join(providerIDsToStrings(connected), ", ")))
 	builder.WriteString(fmt.Sprintf("- Default provider: %s\n", defaultProvider))
 	builder.WriteString(fmt.Sprintf("- Wallets: %s\n", walletLine))
 	builder.WriteString("Use /provider <id> to switch; /model to change model.")
 
-	m.addSystem(builder.String())
-	m.updateViewport()
-	return m, nil
+	return m.sys(builder.String())
 }
 
 func providerIDsToStrings(ids []llm.ProviderID) []string {
