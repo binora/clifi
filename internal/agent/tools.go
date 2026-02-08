@@ -24,7 +24,7 @@ import (
 // ToolRegistry manages available tools and their handlers
 type ToolRegistry struct {
 	tools       []llm.Tool
-	handlers    map[string]llm.ToolHandler
+	handlers    map[string]toolHandler
 	chainClient *chain.Client
 	dataDir     string
 
@@ -55,7 +55,7 @@ func NewToolRegistryWithDataDir(dataDir string) *ToolRegistry {
 		dataDir:     dataDir,
 	}
 
-	tr.handlers = map[string]llm.ToolHandler{
+	tr.handlers = map[string]toolHandler{
 		"get_balances":      tr.handleGetBalances,
 		"get_token_balance": tr.handleGetTokenBalance,
 		"list_wallets":      tr.handleListWallets,
@@ -76,11 +76,14 @@ func (tr *ToolRegistry) GetTools() []llm.Tool {
 	return tr.tools
 }
 
-// ExecuteTool executes a tool by name with the given input
-func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
+type toolHandler func(ctx context.Context, input json.RawMessage) (ToolOutput, error)
+
+// ExecuteTool executes a tool by name with the given input.
+// The returned ToolOutput.Text is what should be passed back to the LLM as the tool result.
+func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, input json.RawMessage) (ToolOutput, error) {
 	handler, ok := tr.handlers[name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", name)
+		return ToolOutput{}, fmt.Errorf("unknown tool: %s", name)
 	}
 
 	return handler(ctx, input)
@@ -140,15 +143,15 @@ type getBalancesInput struct {
 	Chains  []string `json:"chains"`
 }
 
-func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	var params getBalancesInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	address, err := requireHexAddress("address", params.Address)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	// Default to top 5 EVM chains by TVL/usage. These have reliable public RPCs.
@@ -160,7 +163,7 @@ func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMes
 	// Pre-condition: Validate all chains exist before querying (fail fast on invalid input)
 	for _, chainName := range params.Chains {
 		if _, err := tr.chainClient.GetChainConfig(chainName); err != nil {
-			return "", fmt.Errorf("unknown chain: %s", chainName)
+			return ToolOutput{}, fmt.Errorf("unknown chain: %s", chainName)
 		}
 	}
 
@@ -179,7 +182,27 @@ func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMes
 		results = append(results, fmt.Sprintf("%s: %s %s", chainName, formatted, balance.Symbol))
 	}
 
-	return fmt.Sprintf("Balances for %s:\n%s", params.Address, strings.Join(results, "\n")), nil
+	text := fmt.Sprintf("Balances for %s:\n%s", params.Address, strings.Join(results, "\n"))
+	block := UIBlock{
+		Kind: UIBlockTable,
+		Table: &UITable{
+			Title:   fmt.Sprintf("Balances for %s", params.Address),
+			Headers: []string{"Chain", "Balance"},
+			Rows:    make([][]string, 0, len(results)),
+		},
+	}
+	for _, line := range results {
+		// line is either "<chain>: <value>" or "<chain>: error - <err>"
+		parts := strings.SplitN(line, ":", 2)
+		chain := strings.TrimSpace(parts[0])
+		val := ""
+		if len(parts) == 2 {
+			val = strings.TrimSpace(parts[1])
+		}
+		block.Table.Rows = append(block.Table.Rows, []string{chain, val})
+	}
+
+	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 }
 
 type getTokenBalanceInput struct {
@@ -188,41 +211,55 @@ type getTokenBalanceInput struct {
 	Chain   string `json:"chain"`
 }
 
-func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	var params getTokenBalanceInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	walletAddr, err := requireHexAddress("wallet address", params.Address)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	tokenAddr, err := requireHexAddress("token address", params.Token)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	balance, err := tr.chainClient.GetTokenBalance(ctx, params.Chain, tokenAddr, walletAddr)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	formatted := chain.FormatBalance(balance.Balance, balance.Decimals)
-	return fmt.Sprintf("Token balance on %s:\n%s %s (%s)", params.Chain, formatted, balance.Symbol, balance.Name), nil
+	text := fmt.Sprintf("Token balance on %s:\n%s %s (%s)", params.Chain, formatted, balance.Symbol, balance.Name)
+	block := UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: "Token balance",
+			Items: []KVItem{
+				{Key: "Chain", Value: params.Chain},
+				{Key: "Wallet", Value: params.Address},
+				{Key: "Token", Value: params.Token},
+				{Key: "Balance", Value: formatted + " " + balance.Symbol},
+				{Key: "Name", Value: balance.Name},
+			},
+		},
+	}
+	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 }
 
-func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	km, err := tr.keystore()
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	accounts := km.ListAccounts()
 	if len(accounts) == 0 {
-		return "No wallets found. Use 'clifi wallet create' to create one.", nil
+		return ToolOutput{Text: "No wallets found. Use 'clifi wallet create' to create one."}, nil
 	}
 
 	var results []string
@@ -230,25 +267,34 @@ func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMes
 		results = append(results, fmt.Sprintf("%d. %s", i+1, acc.Address.Hex()))
 	}
 
-	return fmt.Sprintf("Found %d wallet(s):\n%s", len(accounts), strings.Join(results, "\n")), nil
+	text := fmt.Sprintf("Found %d wallet(s):\n%s", len(accounts), strings.Join(results, "\n"))
+	table := &UITable{
+		Title:   fmt.Sprintf("Wallets (%d)", len(accounts)),
+		Headers: []string{"#", "Address"},
+		Rows:    make([][]string, 0, len(accounts)),
+	}
+	for i, acc := range accounts {
+		table.Rows = append(table.Rows, []string{fmt.Sprintf("%d", i+1), acc.Address.Hex()})
+	}
+	return ToolOutput{Text: text, Blocks: []UIBlock{{Kind: UIBlockTable, Table: table}}}, nil
 }
 
 type getChainInfoInput struct {
 	Chain string `json:"chain"`
 }
 
-func (tr *ToolRegistry) handleGetChainInfo(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetChainInfo(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	var params getChainInfoInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	config, err := tr.chainClient.GetChainConfig(params.Chain)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
-	info := fmt.Sprintf(`Chain: %s
+	text := fmt.Sprintf(`Chain: %s
 Name: %s
 Chain ID: %s
 Native Currency: %s
@@ -262,10 +308,24 @@ Testnet: %v`,
 		config.IsTestnet,
 	)
 
-	return info, nil
+	block := UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: "Chain info",
+			Items: []KVItem{
+				{Key: "Chain", Value: params.Chain},
+				{Key: "Name", Value: config.Name},
+				{Key: "Chain ID", Value: config.ChainID.String()},
+				{Key: "Native", Value: config.NativeCurrency},
+				{Key: "Explorer", Value: config.ExplorerURL},
+				{Key: "Testnet", Value: fmt.Sprintf("%v", config.IsTestnet)},
+			},
+		},
+	}
+	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 }
 
-func (tr *ToolRegistry) handleListChains(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleListChains(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	chains := tr.chainClient.ListChains()
 
 	var mainnetChains, testnetChains []string
@@ -286,7 +346,25 @@ func (tr *ToolRegistry) handleListChains(ctx context.Context, input json.RawMess
 		result += "\n\nTestnets:\n" + strings.Join(testnetChains, "\n")
 	}
 
-	return result, nil
+	mainTable := &UITable{Title: "Mainnets", Headers: []string{"Chain", "Name", "Chain ID"}, Rows: [][]string{}}
+	testTable := &UITable{Title: "Testnets", Headers: []string{"Chain", "Name", "Chain ID"}, Rows: [][]string{}}
+	for _, name := range chains {
+		cfg, _ := tr.chainClient.GetChainConfig(name)
+		if cfg == nil {
+			continue
+		}
+		row := []string{name, cfg.Name, cfg.ChainID.String()}
+		if cfg.IsTestnet {
+			testTable.Rows = append(testTable.Rows, row)
+		} else {
+			mainTable.Rows = append(mainTable.Rows, row)
+		}
+	}
+	blocks := []UIBlock{{Kind: UIBlockTable, Table: mainTable}}
+	if len(testTable.Rows) > 0 {
+		blocks = append(blocks, UIBlock{Kind: UIBlockTable, Table: testTable})
+	}
+	return ToolOutput{Text: result, Blocks: blocks}, nil
 }
 
 type sendNativeInput struct {
@@ -324,52 +402,52 @@ type approveTokenInput struct {
 	Wait         *bool  `json:"wait"`
 }
 
-func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	var params sendNativeInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if params.To == "" || !common.IsHexAddress(params.To) {
-		return "", fmt.Errorf("invalid recipient address")
+		return ToolOutput{}, fmt.Errorf("invalid recipient address")
 	}
 	if params.Chain == "" {
-		return "", fmt.Errorf("chain is required")
+		return ToolOutput{}, fmt.Errorf("chain is required")
 	}
 	if params.AmountETH == "" {
-		return "", fmt.Errorf("amount_eth is required")
+		return ToolOutput{}, fmt.Errorf("amount_eth is required")
 	}
 
 	wei, err := parseEthToWei(params.AmountETH)
 	if err != nil {
-		return "", fmt.Errorf("invalid amount_eth: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid amount_eth: %w", err)
 	}
 	if wei.Sign() <= 0 {
-		return "", fmt.Errorf("amount_eth must be greater than zero")
+		return ToolOutput{}, fmt.Errorf("amount_eth must be greater than zero")
 	}
 
 	km, err := tr.keystore()
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	accounts := km.ListAccounts()
 	if len(accounts) == 0 {
-		return "", fmt.Errorf("no wallets found in keystore")
+		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
 	}
 
 	fromAddr := accounts[0].Address
 	if params.From != "" {
 		if !common.IsHexAddress(params.From) {
-			return "", fmt.Errorf("invalid from address")
+			return ToolOutput{}, fmt.Errorf("invalid from address")
 		}
 		fromAddr = common.HexToAddress(params.From)
 	}
 
 	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	intent := tx.Intent{
@@ -379,7 +457,7 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		ValueWei: wei,
 	}
 	if err := tx.Validate(intent, loadPolicy()); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	previewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -387,7 +465,7 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 
 	unsigned, fees, err := tx.BuildUnsignedTx(previewCtx, tr.chainClient, intent)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	summary := fmt.Sprintf("Preview:\n- Chain: %s\n- From: %s\n- To: %s\n- Amount: %s ETH\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total: %s ETH\n",
@@ -403,18 +481,18 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 
 	if !params.Confirm {
 		if params.Password == "" {
-			return summary + "\nSet confirm=true and provide password to sign and broadcast.", nil
+			return ToolOutput{Text: summary + "\nSet confirm=true and provide password to sign and broadcast."}, nil
 		}
-		return summary + "\nSet confirm=true to sign and broadcast.", nil
+		return ToolOutput{Text: summary + "\nSet confirm=true to sign and broadcast."}, nil
 	}
 
 	if params.Password == "" {
-		return "", fmt.Errorf("password required to sign")
+		return ToolOutput{}, fmt.Errorf("password required to sign")
 	}
 
 	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
@@ -423,49 +501,62 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		result += "\n" + line
 	}
 
-	return result, nil
+	block := UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: "Native send",
+			Items: []KVItem{
+				{Key: "Chain", Value: params.Chain},
+				{Key: "From", Value: fromAddr.Hex()},
+				{Key: "To", Value: params.To},
+				{Key: "Amount", Value: params.AmountETH + " ETH"},
+				{Key: "Tx", Value: signed.Hash().Hex()},
+			},
+		},
+	}
+	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
 }
 
-func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
 	var params sendTokenInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if params.To == "" || !common.IsHexAddress(params.To) {
-		return "", fmt.Errorf("invalid recipient address")
+		return ToolOutput{}, fmt.Errorf("invalid recipient address")
 	}
 	if params.Token == "" || !common.IsHexAddress(params.Token) {
-		return "", fmt.Errorf("invalid token address")
+		return ToolOutput{}, fmt.Errorf("invalid token address")
 	}
 	if params.Chain == "" {
-		return "", fmt.Errorf("chain is required")
+		return ToolOutput{}, fmt.Errorf("chain is required")
 	}
 	if params.AmountTokens == "" {
-		return "", fmt.Errorf("amount_tokens is required")
+		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
 	}
 
 	km, err := tr.keystore()
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	accounts := km.ListAccounts()
 	if len(accounts) == 0 {
-		return "", fmt.Errorf("no wallets found in keystore")
+		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
 	}
 	fromAddr := accounts[0].Address
 	if params.From != "" {
 		if !common.IsHexAddress(params.From) {
-			return "", fmt.Errorf("invalid from address")
+			return ToolOutput{}, fmt.Errorf("invalid from address")
 		}
 		fromAddr = common.HexToAddress(params.From)
 	}
 
 	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	tokenAddr := common.HexToAddress(params.Token)
@@ -475,15 +566,15 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 
 	amountWei, err := decimalToWei(params.AmountTokens, int(decimals))
 	if err != nil {
-		return "", fmt.Errorf("invalid amount_tokens: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid amount_tokens: %w", err)
 	}
 	if amountWei.Sign() <= 0 {
-		return "", fmt.Errorf("amount_tokens must be greater than zero")
+		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
 	}
 
 	data, err := buildERC20TransferData(common.HexToAddress(params.To), amountWei)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	intent := tx.Intent{
@@ -494,12 +585,12 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		Data:     data,
 	}
 	if err := tx.Validate(intent, loadPolicy()); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	unsigned, fees, err := tx.BuildUnsignedTx(ctx, tr.chainClient, intent)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	summary := fmt.Sprintf("Preview ERC20 transfer:\n- Token: %s (%s)\n- Chain: %s\n- From: %s\n- To: %s\n- Amount: %s %s\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total (gas only): %s ETH\n",
@@ -511,15 +602,15 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	)
 
 	if !params.Confirm {
-		return summary + "\nSet confirm=true and provide password to broadcast.", nil
+		return ToolOutput{Text: summary + "\nSet confirm=true and provide password to broadcast."}, nil
 	}
 	if params.Password == "" {
-		return "", fmt.Errorf("password required to sign")
+		return ToolOutput{}, fmt.Errorf("password required to sign")
 	}
 
 	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
@@ -527,49 +618,63 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
 		result += "\n" + line
 	}
-	return result, nil
+	block := UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: "ERC20 send",
+			Items: []KVItem{
+				{Key: "Chain", Value: params.Chain},
+				{Key: "From", Value: fromAddr.Hex()},
+				{Key: "To", Value: params.To},
+				{Key: "Token", Value: params.Token},
+				{Key: "Amount", Value: params.AmountTokens + " " + symbol},
+				{Key: "Tx", Value: signed.Hash().Hex()},
+			},
+		},
+	}
+	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
 }
 
-func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
 	var params approveTokenInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if params.Spender == "" || !common.IsHexAddress(params.Spender) {
-		return "", fmt.Errorf("invalid spender address")
+		return ToolOutput{}, fmt.Errorf("invalid spender address")
 	}
 	if params.Token == "" || !common.IsHexAddress(params.Token) {
-		return "", fmt.Errorf("invalid token address")
+		return ToolOutput{}, fmt.Errorf("invalid token address")
 	}
 	if params.Chain == "" {
-		return "", fmt.Errorf("chain is required")
+		return ToolOutput{}, fmt.Errorf("chain is required")
 	}
 	if params.AmountTokens == "" {
-		return "", fmt.Errorf("amount_tokens is required")
+		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
 	}
 
 	km, err := tr.keystore()
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	accounts := km.ListAccounts()
 	if len(accounts) == 0 {
-		return "", fmt.Errorf("no wallets found in keystore")
+		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
 	}
 	fromAddr := accounts[0].Address
 	if params.From != "" {
 		if !common.IsHexAddress(params.From) {
-			return "", fmt.Errorf("invalid from address")
+			return ToolOutput{}, fmt.Errorf("invalid from address")
 		}
 		fromAddr = common.HexToAddress(params.From)
 	}
 
 	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	tokenAddr := common.HexToAddress(params.Token)
@@ -578,15 +683,15 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 
 	amountWei, err := decimalToWei(params.AmountTokens, int(decimals))
 	if err != nil {
-		return "", fmt.Errorf("invalid amount_tokens: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid amount_tokens: %w", err)
 	}
 	if amountWei.Sign() <= 0 {
-		return "", fmt.Errorf("amount_tokens must be greater than zero")
+		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
 	}
 
 	data, err := buildERC20ApproveData(common.HexToAddress(params.Spender), amountWei)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	intent := tx.Intent{
@@ -597,12 +702,12 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		Data:     data,
 	}
 	if err := tx.Validate(intent, loadPolicy()); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	unsigned, fees, err := tx.BuildUnsignedTx(ctx, tr.chainClient, intent)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	summary := fmt.Sprintf("Preview ERC20 approval:\n- Token: %s (%s)\n- Chain: %s\n- From: %s\n- Spender: %s\n- Allowance: %s %s\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total (gas only): %s ETH\n",
@@ -614,15 +719,15 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	)
 
 	if !params.Confirm {
-		return summary + "\nSet confirm=true and provide password to broadcast.", nil
+		return ToolOutput{Text: summary + "\nSet confirm=true and provide password to broadcast."}, nil
 	}
 	if params.Password == "" {
-		return "", fmt.Errorf("password required to sign")
+		return ToolOutput{}, fmt.Errorf("password required to sign")
 	}
 
 	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
@@ -630,7 +735,21 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
 		result += "\n" + line
 	}
-	return result, nil
+	block := UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: "ERC20 approval",
+			Items: []KVItem{
+				{Key: "Chain", Value: params.Chain},
+				{Key: "From", Value: fromAddr.Hex()},
+				{Key: "Spender", Value: params.Spender},
+				{Key: "Token", Value: params.Token},
+				{Key: "Allowance", Value: params.AmountTokens + " " + symbol},
+				{Key: "Tx", Value: signed.Hash().Hex()},
+			},
+		},
+	}
+	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
 }
 
 type getReceiptInput struct {
@@ -638,49 +757,63 @@ type getReceiptInput struct {
 	TxHash string `json:"tx_hash"`
 }
 
-func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleGetReceipt(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	var params getReceiptInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if params.Chain == "" {
-		return "", fmt.Errorf("chain is required")
+		return ToolOutput{}, fmt.Errorf("chain is required")
 	}
 	if params.TxHash == "" {
-		return "", fmt.Errorf("tx_hash is required")
+		return ToolOutput{}, fmt.Errorf("tx_hash is required")
 	}
 	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
-		return "", fmt.Errorf("unknown chain: %s", params.Chain)
+		return ToolOutput{}, fmt.Errorf("unknown chain: %s", params.Chain)
 	}
 
 	txHash, err := parseTxHash(params.TxHash)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	if rs, err := tr.receiptStore(); err == nil {
 		if stored, err := rs.Get(params.Chain, params.TxHash); err == nil {
-			return fmt.Sprintf("Receipt (cached):\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+			text := fmt.Sprintf("Receipt (cached):\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
 				stored.Chain, stored.TxHash, stored.Status, stored.GasUsed,
-			), nil
+			)
+			block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt (cached)", Items: []KVItem{
+				{Key: "Chain", Value: stored.Chain},
+				{Key: "Tx", Value: stored.TxHash},
+				{Key: "Status", Value: fmt.Sprintf("%d", stored.Status)},
+				{Key: "Gas used", Value: fmt.Sprintf("%d", stored.GasUsed)},
+			}}}
+			return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 		}
 	}
 
 	receipt, err := tr.chainClient.GetTransactionReceipt(ctx, params.Chain, txHash)
 	if err != nil {
-		return "", fmt.Errorf("receipt not found (tx may be pending): %w", err)
+		return ToolOutput{}, fmt.Errorf("receipt not found (tx may be pending): %w", err)
 	}
 
 	if rs, err := tr.receiptStore(); err == nil {
 		_ = rs.Upsert(params.Chain, receipt)
 	}
 
-	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+	text := fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
 		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
-	), nil
+	)
+	block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt", Items: []KVItem{
+		{Key: "Chain", Value: params.Chain},
+		{Key: "Tx", Value: params.TxHash},
+		{Key: "Status", Value: fmt.Sprintf("%d", receipt.Status)},
+		{Key: "Gas used", Value: fmt.Sprintf("%d", receipt.GasUsed)},
+	}}}
+	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 }
 
 type waitReceiptInput struct {
@@ -689,23 +822,23 @@ type waitReceiptInput struct {
 	TimeoutSec int    `json:"timeout_sec"`
 }
 
-func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMessage) (string, error) {
+func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	var params waitReceiptInput
 	if err := parseToolInput(input, &params); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 	if params.Chain == "" {
-		return "", fmt.Errorf("chain is required")
+		return ToolOutput{}, fmt.Errorf("chain is required")
 	}
 	if params.TxHash == "" {
-		return "", fmt.Errorf("tx_hash is required")
+		return ToolOutput{}, fmt.Errorf("tx_hash is required")
 	}
 	if _, err := tr.chainClient.GetChainConfig(params.Chain); err != nil {
-		return "", fmt.Errorf("unknown chain: %s", params.Chain)
+		return ToolOutput{}, fmt.Errorf("unknown chain: %s", params.Chain)
 	}
 	txHash, err := parseTxHash(params.TxHash)
 	if err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	timeout := 120 * time.Second
@@ -724,15 +857,22 @@ func (tr *ToolRegistry) handleWaitReceipt(ctx context.Context, input json.RawMes
 
 	receipt, err := tr.chainClient.WaitMined(waitCtx, params.Chain, txHash)
 	if err != nil {
-		return "", fmt.Errorf("wait mined: %w", err)
+		return ToolOutput{}, fmt.Errorf("wait mined: %w", err)
 	}
 	if rs, err := tr.receiptStore(); err == nil {
 		_ = rs.Upsert(params.Chain, receipt)
 	}
 
-	return fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
+	text := fmt.Sprintf("Receipt:\n- Chain: %s\n- Tx: %s\n- Status: %d\n- Gas used: %d\n",
 		params.Chain, params.TxHash, receipt.Status, receipt.GasUsed,
-	), nil
+	)
+	block := UIBlock{Kind: UIBlockKV, KV: &UIKV{Title: "Receipt", Items: []KVItem{
+		{Key: "Chain", Value: params.Chain},
+		{Key: "Tx", Value: params.TxHash},
+		{Key: "Status", Value: fmt.Sprintf("%d", receipt.Status)},
+		{Key: "Gas used", Value: fmt.Sprintf("%d", receipt.GasUsed)},
+	}}}
+	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
 }
 
 func parseTxHash(v string) (common.Hash, error) {

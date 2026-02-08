@@ -60,6 +60,7 @@ type chatMessage struct {
 	content  string
 	toolName string
 	toolArgs string
+	blocks   []agent.UIBlock
 	time     time.Time
 }
 
@@ -230,6 +231,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						kind:     "tool_result",
 						toolName: event.Tool,
 						content:  event.Content,
+						blocks:   event.Blocks,
 						time:     time.Now(),
 					})
 				case "content":
@@ -403,7 +405,13 @@ func (m *model) updateViewport() {
 			content.WriteString(ui.SelectorDim.Render(")"))
 
 		case "tool_result":
-			lines := strings.Split(msg.content, "\n")
+			body := msg.content
+			if len(msg.blocks) > 0 {
+				if rendered := renderBlocks(m.width-6, msg.blocks); rendered != "" {
+					body = rendered
+				}
+			}
+			lines := strings.Split(body, "\n")
 			for i, line := range lines {
 				if i == 0 {
 					content.WriteString("  ")

@@ -85,12 +85,12 @@ func TestToolRegistry_ExecuteTool(t *testing.T) {
 
 		// Valid address format (though balance check will likely fail due to no RPC)
 		input := json.RawMessage(`{"address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "chains": ["sepolia"]}`)
-		result, err := tr.ExecuteTool(context.Background(), "get_balances", input)
+		out, err := tr.ExecuteTool(context.Background(), "get_balances", input)
 
 		// Even if RPC fails, address validation should pass
 		// The result should at least start with "Balances for" or contain an error for the chain
 		if err == nil {
-			assert.Contains(t, result, "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")
+			assert.Contains(t, out.Text, "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")
 		}
 	})
 
@@ -119,12 +119,12 @@ func TestToolRegistry_ExecuteTool(t *testing.T) {
 		defer tr.Close()
 
 		input := json.RawMessage(`{"chain": "ethereum"}`)
-		result, err := tr.ExecuteTool(context.Background(), "get_chain_info", input)
+		out, err := tr.ExecuteTool(context.Background(), "get_chain_info", input)
 		require.NoError(t, err)
 
-		assert.Contains(t, result, "Ethereum")
-		assert.Contains(t, result, "Chain ID: 1")
-		assert.Contains(t, result, "ETH")
+		assert.Contains(t, out.Text, "Ethereum")
+		assert.Contains(t, out.Text, "Chain ID: 1")
+		assert.Contains(t, out.Text, "ETH")
 	})
 
 	t.Run("get_chain_info returns error for unknown chain", func(t *testing.T) {
@@ -140,13 +140,13 @@ func TestToolRegistry_ExecuteTool(t *testing.T) {
 		tr := NewToolRegistry()
 		defer tr.Close()
 
-		result, err := tr.ExecuteTool(context.Background(), "list_chains", json.RawMessage(`{}`))
+		out, err := tr.ExecuteTool(context.Background(), "list_chains", json.RawMessage(`{}`))
 		require.NoError(t, err)
 
-		assert.Contains(t, result, "Supported Chains")
-		assert.Contains(t, result, "Mainnets")
-		assert.Contains(t, result, "ethereum")
-		assert.Contains(t, result, "base")
+		assert.Contains(t, out.Text, "Supported Chains")
+		assert.Contains(t, out.Text, "Mainnets")
+		assert.Contains(t, out.Text, "ethereum")
+		assert.Contains(t, out.Text, "base")
 	})
 
 	t.Run("handles malformed JSON input", func(t *testing.T) {

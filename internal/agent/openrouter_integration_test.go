@@ -68,14 +68,14 @@ func TestOpenRouter_ListWalletsToolCall(t *testing.T) {
 		assert.Equal(t, "list_wallets", tc.Name)
 
 		// Execute tool locally using our registry
-		result, err := registry.ExecuteTool(ctx, tc.Name, tc.Input)
+		out, err := registry.ExecuteTool(ctx, tc.Name, tc.Input)
 		require.NoError(t, err)
-		assert.Contains(t, result, acct.Address.Hex()[2:6])
+		assert.Contains(t, out.Text, acct.Address.Hex()[2:6])
 
 		// Continue with tool results
 		next, err := provider.ChatWithToolResults(ctx, req, resp.ToolCalls, []llm.ToolResult{{
 			ToolUseID: tc.ID,
-			Content:   result,
+			Content:   out.Text,
 			IsError:   false,
 		}})
 		require.NoError(t, err)

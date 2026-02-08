@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yolodolo42/clifi/internal/auth"
 	"github.com/yolodolo42/clifi/internal/llm"
@@ -18,7 +19,8 @@ type ChatEvent struct {
 	Tool    string // Tool name for tool_call/tool_result
 	Args    string // Tool arguments (summarized) for tool_call
 	Content string // Content for tool_result or final content
-	IsError bool   // True if tool result was an error
+	Blocks  []UIBlock
+	IsError bool // True if tool result was an error
 }
 
 // Agent is the core agent that orchestrates conversations and tool calls
@@ -32,6 +34,9 @@ type Agent struct {
 	toolRegistry *ToolRegistry
 	systemPrompt string
 	conversation []llm.Message
+
+	sessionID string
+	logger    *sessionLogger
 }
 
 // SystemPrompt is the default system prompt for the crypto agent
@@ -200,6 +205,9 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 		Content: userMessage,
 	})
 
+	a.ensureSession()
+	a.log(sessionRecord{TS: nowTS(), Type: "user", Content: userMessage, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
+
 	modelID := a.provider.DefaultModel()
 	openRouterKey := a.getOpenRouterAPIKey()
 
@@ -213,6 +221,7 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 			Type:    "content",
 			Content: fmt.Sprintf("Tools disabled for model %s; running without on-chain tools. Switch to a tool-capable model%s for balances/wallet actions.", modelID, suggestion),
 		})
+		a.log(sessionRecord{TS: nowTS(), Type: "assistant", Content: events[len(events)-1].Content, Provider: string(a.provider.ID()), Model: modelID})
 	}
 
 	req := &llm.ChatRequest{
@@ -247,6 +256,7 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 			Type:    "content",
 			Content: response.Content,
 		})
+		a.log(sessionRecord{TS: nowTS(), Type: "assistant", Content: response.Content, Provider: string(a.provider.ID()), Model: modelID})
 	}
 
 	return events, nil
@@ -290,15 +300,17 @@ func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.To
 	results := make([]llm.ToolResult, len(toolCalls))
 
 	for i, tc := range toolCalls {
+		redactedArgs := RedactJSONArgs(string(tc.Input))
 		if emitEvent != nil {
 			emitEvent(ChatEvent{
 				Type: "tool_call",
 				Tool: tc.Name,
-				Args: string(tc.Input),
+				Args: redactedArgs,
 			})
 		}
+		a.log(sessionRecord{TS: nowTS(), Type: "tool_call", ToolName: tc.Name, Args: redactedArgs, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
 
-		result, err := a.toolRegistry.ExecuteTool(ctx, tc.Name, tc.Input)
+		out, err := a.toolRegistry.ExecuteTool(ctx, tc.Name, tc.Input)
 		if err != nil {
 			errContent := fmt.Sprintf("Error: %v", err)
 			results[i] = llm.ToolResult{
@@ -314,20 +326,23 @@ func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.To
 					IsError: true,
 				})
 			}
+			a.log(sessionRecord{TS: nowTS(), Type: "tool_result", ToolName: tc.Name, Text: errContent, IsError: true, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
 		} else {
 			results[i] = llm.ToolResult{
 				ToolUseID: tc.ID,
-				Content:   result,
+				Content:   out.Text,
 				IsError:   false,
 			}
 			if emitEvent != nil {
 				emitEvent(ChatEvent{
 					Type:    "tool_result",
 					Tool:    tc.Name,
-					Content: result,
+					Content: out.Text,
+					Blocks:  out.Blocks,
 					IsError: false,
 				})
 			}
+			a.log(sessionRecord{TS: nowTS(), Type: "tool_result", ToolName: tc.Name, Text: out.Text, Blocks: out.Blocks, IsError: false, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
 		}
 	}
 	return results
@@ -366,6 +381,7 @@ func (a *Agent) SetModel(modelID string) error {
 		return err
 	}
 	a.conversation = make([]llm.Message, 0)
+	a.rotateSession()
 	return nil
 }
 
@@ -407,6 +423,7 @@ func (a *Agent) SetProvider(providerID llm.ProviderID) error {
 
 	a.provider = newProvider
 	a.conversation = make([]llm.Message, 0)
+	a.rotateSession()
 	return nil
 }
 
@@ -415,6 +432,7 @@ func (a *Agent) Reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.conversation = make([]llm.Message, 0)
+	a.rotateSession()
 }
 
 // Close cleans up agent resources
@@ -422,8 +440,38 @@ func (a *Agent) Close() {
 	if a.toolRegistry != nil {
 		a.toolRegistry.Close()
 	}
+	if a.logger != nil {
+		a.logger.Close()
+	}
 	// Close Gemini client if applicable
 	if gemini, ok := a.provider.(*llm.GeminiProvider); ok {
 		_ = gemini.Close()
 	}
+}
+
+func (a *Agent) ensureSession() {
+	if a.sessionID != "" {
+		return
+	}
+	a.rotateSession()
+}
+
+func (a *Agent) rotateSession() {
+	if a.logger != nil {
+		a.logger.Close()
+		a.logger = nil
+	}
+
+	a.sessionID = time.Now().UTC().Format("20060102-150405.000000000")
+	l, err := newSessionLogger(a.dataDir, a.sessionID)
+	if err == nil {
+		a.logger = l
+	}
+}
+
+func (a *Agent) log(rec sessionRecord) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.logRecord(rec)
 }
