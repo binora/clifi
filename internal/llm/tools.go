@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 )
 
@@ -18,9 +17,6 @@ type ToolResult struct {
 	Content   string `json:"content"`
 	IsError   bool   `json:"is_error"`
 }
-
-// ToolHandler is a function that handles a tool call
-type ToolHandler func(ctx context.Context, input json.RawMessage) (string, error)
 
 // ToolChoice controls how the LLM may call tools.
 // Mode defaults to auto when zero-valued.

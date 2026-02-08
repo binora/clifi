@@ -135,4 +135,4 @@ func ValidateModelID(modelID string, models []Model) error {
 	return fmt.Errorf("unknown model %q for this provider", modelID)
 }
 
-// Note: Tool, ToolResult, ToolHandler types are defined in tools.go
+// Note: Tool and ToolResult types are defined in tools.go
