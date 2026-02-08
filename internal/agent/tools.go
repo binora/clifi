@@ -718,15 +718,7 @@ func parseTxHash(v string) (common.Hash, error) {
 }
 
 func parseEthToWei(amount string) (*big.Int, error) {
-	r := new(big.Rat)
-	if _, ok := r.SetString(amount); !ok {
-		return nil, fmt.Errorf("could not parse amount")
-	}
-	weiRat := new(big.Rat).Mul(r, big.NewRat(1_000_000_000_000_000_000, 1)) // 1e18
-	if !weiRat.IsInt() {
-		weiRat = weiRat.SetInt(new(big.Int).Div(weiRat.Num(), weiRat.Denom()))
-	}
-	return weiRat.Num(), nil
+	return decimalToWei(amount, 18)
 }
 
 func decimalToWei(amount string, decimals int) (*big.Int, error) {
@@ -786,24 +778,20 @@ func queryTokenMeta(ctx context.Context, cc *chain.Client, chainName string, tok
 
 // ERC20 transfer(address,uint256)
 func buildERC20TransferData(to common.Address, amount *big.Int) ([]byte, error) {
-	method := common.FromHex("0xa9059cbb")
-	encodedAmount := common.LeftPadBytes(amount.Bytes(), 32)
-	data := make([]byte, 0, 4+32+32)
-	data = append(data, method...)
-	data = append(data, common.LeftPadBytes(to.Bytes(), 32)...)
-	data = append(data, encodedAmount...)
-	return data, nil
+	return buildERC20Data("0xa9059cbb", to, amount), nil
 }
 
 // ERC20 approve(address,uint256)
 func buildERC20ApproveData(spender common.Address, amount *big.Int) ([]byte, error) {
-	method := common.FromHex("0x095ea7b3")
-	encodedAmount := common.LeftPadBytes(amount.Bytes(), 32)
+	return buildERC20Data("0x095ea7b3", spender, amount), nil
+}
+
+func buildERC20Data(methodHex string, addr common.Address, amount *big.Int) []byte {
 	data := make([]byte, 0, 4+32+32)
-	data = append(data, method...)
-	data = append(data, common.LeftPadBytes(spender.Bytes(), 32)...)
-	data = append(data, encodedAmount...)
-	return data, nil
+	data = append(data, common.FromHex(methodHex)...)
+	data = append(data, common.LeftPadBytes(addr.Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(amount.Bytes(), 32)...)
+	return data
 }
 
 func loadPolicy() tx.Policy {
