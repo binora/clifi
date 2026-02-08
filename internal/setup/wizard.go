@@ -44,8 +44,6 @@ type WizardModel struct {
 	step     WizardStep
 	status   *SetupStatus
 	dataDir  string
-	width    int
-	height   int
 	quitting bool
 
 	// Provider step
@@ -59,10 +57,9 @@ type WizardModel struct {
 	envKeyProvider   llm.ProviderID
 
 	// Auth method step
-	authSelector    ui.Selector
-	selectedAuth    string // "api" or "oauth"
-	oauthInProgress bool
-	oauthError      string
+	authSelector ui.Selector
+	selectedAuth string // "api" or "oauth"
+	oauthError   string
 
 	// Wallet step
 	walletChoices  []string
@@ -311,11 +308,10 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyEnter {
 				return m.updateProviderKey(msg)
 			}
-			// Fall through to let input update happen
+		// Fall through to let input update happen
 
 		case StepOAuthWaiting:
 			if msg.Type == tea.KeyEsc {
-				m.oauthInProgress = false
 				m.oauthError = ""
 				if len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) <= 1 {
 					m.step = StepProviderSelect
@@ -357,8 +353,6 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
 		m.progress.Width = min(40, msg.Width-20)
 		m.providerSelector.SetWidth(msg.Width)
 		m.authSelector.SetWidth(msg.Width)
@@ -394,7 +388,6 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case oauthCompleteMsg:
-		m.oauthInProgress = false
 		if msg.success {
 			m.step = StepWalletChoice
 		} else {
@@ -498,7 +491,6 @@ func (m WizardModel) updateProviderSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(authMethods) == 1 {
 		m.selectedAuth = authMethods[0].authType
 		if m.selectedAuth == "oauth" {
-			m.oauthInProgress = true
 			m.oauthError = ""
 			m.step = StepOAuthWaiting
 			return m, m.startOAuthFlow()
@@ -531,7 +523,6 @@ func (m WizardModel) updateAuthMethod(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	m.selectedAuth = m.authSelector.Selected()
 	if m.selectedAuth == "oauth" {
-		m.oauthInProgress = true
 		m.oauthError = ""
 		m.step = StepOAuthWaiting
 		return m, m.startOAuthFlow()
