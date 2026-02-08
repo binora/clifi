@@ -396,9 +396,6 @@ type sendTokenInput struct {
 	Password     string `json:"password"`
 	Confirm      bool   `json:"confirm"`
 	Wait         *bool  `json:"wait"`
-	AllowApprove bool   `json:"allow_approve"` // for spender approvals
-	Spender      string `json:"spender"`
-	ApprovalFlow bool   `json:"approval_flow"`
 }
 
 type approveTokenInput struct {
