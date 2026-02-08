@@ -388,19 +388,17 @@ type sendNativeInput struct {
 }
 
 type sendTokenInput struct {
-	From         string `json:"from"`
-	To           string `json:"to"`
-	Token        string `json:"token"`
-	Chain        string `json:"chain"`
-	AmountTokens string `json:"amount_tokens"`
-	Password     string `json:"password"`
-	Confirm      bool   `json:"confirm"`
-	Wait         *bool  `json:"wait"`
+	erc20TxInput
+	To string `json:"to"`
 }
 
 type approveTokenInput struct {
+	erc20TxInput
+	Spender string `json:"spender"`
+}
+
+type erc20TxInput struct {
 	From         string `json:"from"`
-	Spender      string `json:"spender"`
 	Token        string `json:"token"`
 	Chain        string `json:"chain"`
 	AmountTokens string `json:"amount_tokens"`
@@ -531,24 +529,23 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 	}, nil
 }
 
-func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
+func (tr *ToolRegistry) handleERC20Tx(
+	ctx context.Context,
+	params erc20TxInput,
+	counterpartyLabel string,
+	counterpartyValue string,
+	counterpartyAddr common.Address,
+	amountLabel string,
+	blockTitle string,
+	dataFn func(common.Address, *big.Int) ([]byte, error),
+) (ToolOutput, error) {
+	if params.AmountTokens == "" {
+		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
+	}
 
-	var params sendTokenInput
-	if err := parseToolInput(input, &params); err != nil {
-		return ToolOutput{}, err
-	}
-	toAddr, err := requireHexAddress("recipient address", params.To)
-	if err != nil {
-		return ToolOutput{}, err
-	}
 	tokenAddr, err := requireHexAddress("token address", params.Token)
 	if err != nil {
 		return ToolOutput{}, err
-	}
-	if params.AmountTokens == "" {
-		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
 	}
 
 	fromAddr, cfg, err := tr.prepareTxFrom(params.Chain, params.From)
@@ -567,18 +564,12 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
 	}
 
-	data, err := buildERC20TransferData(toAddr, amountWei)
+	data, err := dataFn(counterpartyAddr, amountWei)
 	if err != nil {
 		return ToolOutput{}, err
 	}
 
-	intent := tx.Intent{
-		Chain:    params.Chain,
-		From:     fromAddr,
-		To:       tokenAddr,
-		ValueWei: big.NewInt(0),
-		Data:     data,
-	}
+	intent := tx.Intent{Chain: params.Chain, From: fromAddr, To: tokenAddr, ValueWei: big.NewInt(0), Data: data}
 	if err := tx.Validate(intent, loadPolicy()); err != nil {
 		return ToolOutput{}, err
 	}
@@ -588,12 +579,9 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		return ToolOutput{}, err
 	}
 
-	summary := fmt.Sprintf("Preview ERC20 transfer:\n- Token: %s (%s)\n- Chain: %s\n- From: %s\n- To: %s\n- Amount: %s %s\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total (gas only): %s ETH\n",
-		params.Token, symbol, params.Chain, fromAddr.Hex(), params.To, params.AmountTokens, symbol,
-		fees.GasLimit,
-		weiToGwei(fees.MaxFeePerGas),
-		weiToGwei(fees.MaxPriorityFee),
-		weiToEth(fees.EstimatedCostWei),
+	summary := fmt.Sprintf("Preview ERC20 %s:\n- Token: %s (%s)\n- Chain: %s\n- From: %s\n- %s: %s\n- %s: %s %s\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total (gas only): %s ETH\n",
+		blockTitle, params.Token, symbol, params.Chain, fromAddr.Hex(), counterpartyLabel, counterpartyValue, amountLabel, params.AmountTokens, symbol,
+		fees.GasLimit, weiToGwei(fees.MaxFeePerGas), weiToGwei(fees.MaxPriorityFee), weiToEth(fees.EstimatedCostWei),
 	)
 
 	if !params.Confirm {
@@ -609,21 +597,36 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	}
 
 	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
-
 	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
 		result += "\n" + line
 	}
+
 	return ToolOutput{
 		Text: result,
-		Blocks: []UIBlock{kvBlock("ERC20 send",
+		Blocks: []UIBlock{kvBlock("ERC20 "+blockTitle,
 			KVItem{Key: "Chain", Value: params.Chain},
 			KVItem{Key: "From", Value: fromAddr.Hex()},
-			KVItem{Key: "To", Value: params.To},
+			KVItem{Key: counterpartyLabel, Value: counterpartyValue},
 			KVItem{Key: "Token", Value: params.Token},
-			KVItem{Key: "Amount", Value: params.AmountTokens + " " + symbol},
+			KVItem{Key: amountLabel, Value: params.AmountTokens + " " + symbol},
 			KVItem{Key: "Tx", Value: signed.Hash().Hex()},
 		)},
 	}, nil
+}
+
+func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	var params sendTokenInput
+	if err := parseToolInput(input, &params); err != nil {
+		return ToolOutput{}, err
+	}
+	toAddr, err := requireHexAddress("recipient address", params.To)
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	return tr.handleERC20Tx(ctx, params.erc20TxInput, "To", params.To, toAddr, "Amount", "send", buildERC20TransferData)
 }
 
 func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
@@ -638,86 +641,7 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	if err != nil {
 		return ToolOutput{}, err
 	}
-	tokenAddr, err := requireHexAddress("token address", params.Token)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-	if params.AmountTokens == "" {
-		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
-	}
-
-	fromAddr, cfg, err := tr.prepareTxFrom(params.Chain, params.From)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-	decimals, symbol := uint8(18), "TOKEN"
-	decimals, symbol = queryTokenMeta(ctx, tr.chainClient, params.Chain, tokenAddr, decimals, symbol)
-
-	amountWei, err := decimalToWei(params.AmountTokens, int(decimals))
-	if err != nil {
-		return ToolOutput{}, fmt.Errorf("invalid amount_tokens: %w", err)
-	}
-	if amountWei.Sign() <= 0 {
-		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
-	}
-
-	data, err := buildERC20ApproveData(spenderAddr, amountWei)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-
-	intent := tx.Intent{
-		Chain:    params.Chain,
-		From:     fromAddr,
-		To:       tokenAddr,
-		ValueWei: big.NewInt(0),
-		Data:     data,
-	}
-	if err := tx.Validate(intent, loadPolicy()); err != nil {
-		return ToolOutput{}, err
-	}
-
-	unsigned, fees, err := tx.BuildUnsignedTx(ctx, tr.chainClient, intent)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-
-	summary := fmt.Sprintf("Preview ERC20 approval:\n- Token: %s (%s)\n- Chain: %s\n- From: %s\n- Spender: %s\n- Allowance: %s %s\n- Gas limit: %d\n- Max fee: %s gwei\n- Max priority fee: %s gwei\n- Estimated total (gas only): %s ETH\n",
-		params.Token, symbol, params.Chain, fromAddr.Hex(), params.Spender, params.AmountTokens, symbol,
-		fees.GasLimit,
-		weiToGwei(fees.MaxFeePerGas),
-		weiToGwei(fees.MaxPriorityFee),
-		weiToEth(fees.EstimatedCostWei),
-	)
-
-	if !params.Confirm {
-		return ToolOutput{Text: summary + "\nSet confirm=true and provide password to broadcast."}, nil
-	}
-	if params.Password == "" {
-		return ToolOutput{}, fmt.Errorf("password required to sign")
-	}
-
-	signed, err := tr.signAndSendTx(ctx, params.Chain, fromAddr, params.Password, unsigned, cfg.ChainID)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-
-	result := fmt.Sprintf("%s\n\nBroadcasted tx: %s", summary, signed.Hash().Hex())
-
-	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
-		result += "\n" + line
-	}
-	return ToolOutput{
-		Text: result,
-		Blocks: []UIBlock{kvBlock("ERC20 approval",
-			KVItem{Key: "Chain", Value: params.Chain},
-			KVItem{Key: "From", Value: fromAddr.Hex()},
-			KVItem{Key: "Spender", Value: params.Spender},
-			KVItem{Key: "Token", Value: params.Token},
-			KVItem{Key: "Allowance", Value: params.AmountTokens + " " + symbol},
-			KVItem{Key: "Tx", Value: signed.Hash().Hex()},
-		)},
-	}, nil
+	return tr.handleERC20Tx(ctx, params.erc20TxInput, "Spender", params.Spender, spenderAddr, "Allowance", "approval", buildERC20ApproveData)
 }
 
 type getReceiptInput struct {

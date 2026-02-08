@@ -40,6 +40,39 @@ var providerAPIKeyURLs = map[llm.ProviderID]string{
 	llm.ProviderOpenRouter: "openrouter.ai/settings/keys",
 }
 
+var providerIDs = []llm.ProviderID{
+	llm.ProviderAnthropic,
+	llm.ProviderOpenAI,
+	llm.ProviderGemini,
+	llm.ProviderCopilot,
+	llm.ProviderVenice,
+	llm.ProviderOpenRouter,
+}
+
+var providerNames = map[llm.ProviderID]string{
+	llm.ProviderAnthropic:  "Anthropic (Claude)",
+	llm.ProviderOpenAI:     "OpenAI (GPT-4)",
+	llm.ProviderGemini:     "Google (Gemini)",
+	llm.ProviderCopilot:    "GitHub Copilot",
+	llm.ProviderVenice:     "Venice AI",
+	llm.ProviderOpenRouter: "OpenRouter",
+}
+
+var providerSelectorBaseItems = []ui.SelectorItem{
+	{ID: string(llm.ProviderAnthropic), Label: providerNames[llm.ProviderAnthropic], Description: "recommended - Best reasoning & tool use"},
+	{ID: string(llm.ProviderOpenAI), Label: providerNames[llm.ProviderOpenAI], Description: "Fast responses, widely used"},
+	{ID: string(llm.ProviderGemini), Label: providerNames[llm.ProviderGemini], Description: "1M token context window"},
+	{ID: string(llm.ProviderCopilot), Label: providerNames[llm.ProviderCopilot], Description: "Free with Copilot subscription"},
+	{ID: string(llm.ProviderVenice), Label: providerNames[llm.ProviderVenice], Description: "Privacy-focused, uncensored"},
+	{ID: string(llm.ProviderOpenRouter), Label: providerNames[llm.ProviderOpenRouter], Description: "Access 100+ models with one key"},
+}
+
+var walletSelectorItems = []ui.SelectorItem{
+	{ID: "0", Label: "Create a new wallet"},
+	{ID: "1", Label: "Import existing wallet (coming soon)", Description: "disabled"},
+	{ID: "2", Label: "Continue without wallet"},
+}
+
 // SetupResult contains the result of the setup wizard
 type SetupResult struct {
 	ProviderID    llm.ProviderID
@@ -56,7 +89,7 @@ type WizardModel struct {
 	quitting bool
 
 	// Provider step
-	providerList     []providerItem
+	providerList     []llm.ProviderID // kept for tests + env key scan ordering
 	providerSelector ui.Selector
 	selectedProvider llm.ProviderID
 	apiKeyInput      textinput.Model
@@ -71,7 +104,7 @@ type WizardModel struct {
 	oauthError   string
 
 	// Wallet step
-	walletChoices  []string
+	walletChoices  []string // kept for tests
 	walletSelector ui.Selector
 	passwordInput  textinput.Model
 	confirmInput   textinput.Model
@@ -86,19 +119,6 @@ type WizardModel struct {
 
 	// Result
 	result *SetupResult
-}
-
-type providerItem struct {
-	id          llm.ProviderID
-	name        string
-	description string
-	recommended bool
-}
-
-type authMethodItem struct {
-	authType    string // "api" or "oauth"
-	label       string
-	description string
 }
 
 // Message types
@@ -117,48 +137,13 @@ type walletCreatedMsg struct {
 	err     error
 }
 
-func providerSelectorItems(providers []providerItem) []ui.SelectorItem {
-	items := make([]ui.SelectorItem, 0, len(providers))
-	for _, p := range providers {
-		desc := p.description
-		if p.recommended {
-			desc = "recommended - " + desc
-		}
-		items = append(items, ui.SelectorItem{
-			ID:          string(p.id),
-			Label:       p.name,
-			Description: desc,
-		})
+func withCurrent(items []ui.SelectorItem, id string) []ui.SelectorItem {
+	out := make([]ui.SelectorItem, len(items))
+	copy(out, items)
+	for i := range out {
+		out[i].Current = out[i].ID == id
 	}
-	return items
-}
-
-func authSelectorItems(methods []authMethodItem) []ui.SelectorItem {
-	items := make([]ui.SelectorItem, 0, len(methods))
-	for _, m := range methods {
-		items = append(items, ui.SelectorItem{
-			ID:          m.authType,
-			Label:       m.label,
-			Description: m.description,
-		})
-	}
-	return items
-}
-
-func walletSelectorItems(choices []string) []ui.SelectorItem {
-	items := make([]ui.SelectorItem, 0, len(choices))
-	for i, c := range choices {
-		desc := ""
-		if i == 1 {
-			desc = "disabled"
-		}
-		items = append(items, ui.SelectorItem{
-			ID:          fmt.Sprintf("%d", i),
-			Label:       c,
-			Description: desc,
-		})
-	}
-	return items
+	return out
 }
 
 // NewWizard creates a new wizard model
@@ -200,31 +185,20 @@ func NewWizard(dataDir string) *WizardModel {
 	confirmInput.CharLimit = 100
 	confirmInput.Width = 40
 
-	providers := []providerItem{
-		{id: llm.ProviderAnthropic, name: "Anthropic (Claude)", description: "Best reasoning & tool use", recommended: true},
-		{id: llm.ProviderOpenAI, name: "OpenAI (GPT-4)", description: "Fast responses, widely used"},
-		{id: llm.ProviderGemini, name: "Google (Gemini)", description: "1M token context window"},
-		{id: llm.ProviderCopilot, name: "GitHub Copilot", description: "Free with Copilot subscription"},
-		{id: llm.ProviderVenice, name: "Venice AI", description: "Privacy-focused, uncensored"},
-		{id: llm.ProviderOpenRouter, name: "OpenRouter", description: "Access 100+ models with one key"},
+	currentProvider := ""
+	if status.HasProvider {
+		currentProvider = string(status.ProviderID)
 	}
-
-	walletChoices := []string{
-		"Create a new wallet",
-		"Import existing wallet (coming soon)",
-		"Continue without wallet",
-	}
-
-	providerSelector := ui.NewSelector("Choose an LLM provider", providerSelectorItems(providers))
-	walletSelector := ui.NewSelector("Set up wallet (optional)", walletSelectorItems(walletChoices))
+	providerSelector := ui.NewSelector("Choose an LLM provider", withCurrent(providerSelectorBaseItems, currentProvider))
+	walletSelector := ui.NewSelector("Set up wallet (optional)", walletSelectorItems)
 
 	m := &WizardModel{
 		step:             StepWelcome,
 		status:           status,
 		dataDir:          dataDir,
-		providerList:     providers,
+		providerList:     providerIDs,
 		providerSelector: providerSelector,
-		walletChoices:    walletChoices,
+		walletChoices:    []string{walletSelectorItems[0].Label, walletSelectorItems[1].Label, walletSelectorItems[2].Label},
 		walletSelector:   walletSelector,
 		spinner:          sp,
 		progress:         prog,
@@ -252,11 +226,11 @@ func NewWizard(dataDir string) *WizardModel {
 
 // detectEnvKeys checks for API keys in environment variables
 func (m *WizardModel) detectEnvKeys() {
-	for _, p := range m.providerList {
-		envVar := llm.EnvVarForProvider(p.id)
+	for _, p := range providerIDs {
+		envVar := llm.EnvVarForProvider(p)
 		if envVar != "" && os.Getenv(envVar) != "" {
 			m.envKeyDetected = true
-			m.envKeyProvider = p.id
+			m.envKeyProvider = p
 			return
 		}
 	}
@@ -443,16 +417,10 @@ func formatKeyError(err error, provider llm.ProviderID) string {
 
 	// Auth errors
 	if strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized") {
-		switch provider {
-		case llm.ProviderAnthropic:
-			return "Invalid key. Verify at console.anthropic.com"
-		case llm.ProviderOpenAI:
-			return "Invalid key. Verify at platform.openai.com"
-		case llm.ProviderGemini:
-			return "Invalid key. Verify at aistudio.google.com"
-		default:
-			return "Authentication failed. Check your API key."
+		if apiURL := providerAPIKeyURLs[provider]; apiURL != "" {
+			return "Invalid key. Verify at " + apiURL
 		}
+		return "Authentication failed. Check your API key."
 	}
 
 	// Rate limit
@@ -480,25 +448,17 @@ func (m WizardModel) updateProviderSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.providerSelector.Cancelled() {
 		m.step = StepWelcome
-		m.providerSelector = ui.NewSelector("Choose an LLM provider", providerSelectorItems(m.providerList))
+		m.providerSelector = ui.NewSelector("Choose an LLM provider", withCurrent(providerSelectorBaseItems, ""))
 		return m, nil
 	}
 
 	m.selectedProvider = llm.ProviderID(m.providerSelector.Selected())
 
 	methods := auth.GetProviderAuthInfo(m.selectedProvider).Methods
-	authMethods := make([]authMethodItem, 0, len(methods))
-	for _, method := range methods {
-		authMethods = append(authMethods, authMethodItem{
-			authType:    method.Type,
-			label:       method.Label,
-			description: method.Description,
-		})
-	}
 
 	// If only one auth method (API key), skip selection
-	if len(authMethods) == 1 {
-		m.selectedAuth = authMethods[0].authType
+	if len(methods) == 1 {
+		m.selectedAuth = methods[0].Type
 		if m.selectedAuth == "oauth" {
 			m.oauthError = ""
 			m.step = StepOAuthWaiting
@@ -509,7 +469,11 @@ func (m WizardModel) updateProviderSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.authSelector = ui.NewSelector("Choose authentication method", authSelectorItems(authMethods))
+	items := make([]ui.SelectorItem, 0, len(methods))
+	for _, method := range methods {
+		items = append(items, ui.SelectorItem{ID: method.Type, Label: method.Label, Description: method.Description})
+	}
+	m.authSelector = ui.NewSelector("Choose authentication method", items)
 	m.step = StepAuthMethod
 	return m, nil
 }
@@ -526,7 +490,7 @@ func (m WizardModel) updateAuthMethod(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.authSelector.Cancelled() {
 		m.step = StepProviderSelect
-		m.providerSelector = ui.NewSelector("Choose an LLM provider", providerSelectorItems(m.providerList))
+		m.providerSelector = ui.NewSelector("Choose an LLM provider", withCurrent(providerSelectorBaseItems, string(m.selectedProvider)))
 		return m, nil
 	}
 
@@ -573,7 +537,7 @@ func (m WizardModel) updateWalletChoice(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.walletSelector.Cancelled() {
 		m.step = StepProviderSelect
-		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems(m.walletChoices))
+		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems)
 		return m, nil
 	}
 
@@ -586,7 +550,7 @@ func (m WizardModel) updateWalletChoice(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "1": // import disabled
 		m.passwordError = "Import wallet coming soon. Choose another option."
-		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems(m.walletChoices))
+		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems)
 		return m, nil
 	default: // skip
 		m.step = StepComplete
@@ -677,35 +641,18 @@ func (m WizardModel) renderProgress() string {
 }
 
 func (m WizardModel) viewWelcome() string {
-	var b strings.Builder
-	b.WriteString("\n\n")
-
-	// Check for detected env key
 	if m.envKeyDetected {
 		envVar := llm.EnvVarForProvider(m.envKeyProvider)
 		providerName := m.providerName(m.envKeyProvider)
 
-		box := BoxStyle.Render(
-			TitleStyle.Render("Welcome to clifi") + "\n" +
-				SubtitleStyle.Render("Terminal-first crypto operator agent") + "\n\n" +
-				SuccessStyle.Render(fmt.Sprintf("✓ Found %s in environment!", envVar)) + "\n" +
-				fmt.Sprintf("  Using: %s", providerName),
-		)
-		b.WriteString(box)
-		b.WriteString("\n\n")
-		b.WriteString(HelpStyle.Render("  Press Enter to continue with detected key..."))
-	} else {
-		box := BoxStyle.Render(
-			TitleStyle.Render("Welcome to clifi") + "\n" +
-				SubtitleStyle.Render("Terminal-first crypto operator agent") + "\n\n" +
-				"Let's get you set up in about 2 minutes.",
-		)
-		b.WriteString(box)
-		b.WriteString("\n\n")
-		b.WriteString(HelpStyle.Render("  Press Enter to continue..."))
+		box := BoxStyle.Render(TitleStyle.Render("Welcome to clifi") + "\n" + SubtitleStyle.Render("Terminal-first crypto operator agent") + "\n\n" +
+			SuccessStyle.Render(fmt.Sprintf("✓ Found %s in environment!", envVar)) + "\n" + fmt.Sprintf("  Using: %s", providerName))
+		return "\n\n" + box + "\n\n" + HelpStyle.Render("  Press Enter to continue with detected key...")
 	}
 
-	return b.String()
+	box := BoxStyle.Render(TitleStyle.Render("Welcome to clifi") + "\n" + SubtitleStyle.Render("Terminal-first crypto operator agent") + "\n\n" +
+		"Let's get you set up in about 2 minutes.")
+	return "\n\n" + box + "\n\n" + HelpStyle.Render("  Press Enter to continue...")
 }
 
 func (m WizardModel) viewProviderSelect() string {
@@ -713,102 +660,64 @@ func (m WizardModel) viewProviderSelect() string {
 }
 
 func (m WizardModel) viewAuthMethod() string {
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(m.authSelector.View())
+	errLine := ""
 	if m.oauthError != "" {
-		b.WriteString(fmt.Sprintf("\n%s\n", ErrorStyle.Render("✗ "+m.oauthError)))
+		errLine = "\n" + ErrorStyle.Render("✗ "+m.oauthError) + "\n"
 	}
-	return b.String()
+	return "\n" + m.authSelector.View() + errLine
 }
 
 func (m WizardModel) viewOAuthWaiting() string {
-	var b strings.Builder
-	b.WriteString("\n")
-
 	providerName := m.providerName(m.selectedProvider)
-
-	b.WriteString(TitleStyle.Render(fmt.Sprintf("  Connecting to %s", providerName)))
-	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("  %s Opening browser for authentication...\n\n", m.spinner.View()))
-	b.WriteString(DimStyle.Render("  Complete the login in your browser.\n"))
-	b.WriteString(DimStyle.Render("  Waiting for callback... (timeout: 5 minutes)\n"))
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  Esc to cancel"))
-	return b.String()
+	return "\n" +
+		TitleStyle.Render(fmt.Sprintf("  Connecting to %s", providerName)) + "\n\n" +
+		fmt.Sprintf("  %s Opening browser for authentication...\n\n", m.spinner.View()) +
+		DimStyle.Render("  Complete the login in your browser.\n  Waiting for callback... (timeout: 5 minutes)\n") + "\n" +
+		HelpStyle.Render("  Esc to cancel")
 }
 
 func (m WizardModel) viewProviderKey() string {
-	var b strings.Builder
-	b.WriteString("\n")
-
 	providerName := m.providerName(m.selectedProvider)
 
-	b.WriteString(TitleStyle.Render(fmt.Sprintf("  Enter %s API Key", providerName)))
-	b.WriteString("\n\n")
-
+	header := "\n" + TitleStyle.Render(fmt.Sprintf("  Enter %s API Key", providerName)) + "\n\n"
+	urlLine := ""
 	if apiURL := providerAPIKeyURLs[m.selectedProvider]; apiURL != "" {
-		b.WriteString(SubtitleStyle.Render(fmt.Sprintf("  Get your key at: %s\n\n", apiURL)))
+		urlLine = SubtitleStyle.Render(fmt.Sprintf("  Get your key at: %s\n\n", apiURL))
 	}
 
-	// API key input using textinput
-	b.WriteString("  ")
-	b.WriteString(m.apiKeyInput.View())
-	b.WriteString("\n")
-
+	statusLine := ""
 	if m.validatingKey {
-		b.WriteString(fmt.Sprintf("\n  %s Testing connection...\n", m.spinner.View()))
+		statusLine = fmt.Sprintf("\n  %s Testing connection...\n", m.spinner.View())
 	} else if m.keyError != "" {
-		b.WriteString(fmt.Sprintf("\n  %s\n", ErrorStyle.Render("✗ "+m.keyError)))
+		statusLine = "\n  " + ErrorStyle.Render("✗ "+m.keyError) + "\n"
 	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  Enter to validate • Esc back"))
-	return b.String()
+	return header + urlLine + "  " + m.apiKeyInput.View() + "\n" + statusLine + "\n" + HelpStyle.Render("  Enter to validate • Esc back")
 }
 
 func (m WizardModel) viewWalletChoice() string {
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(DimStyle.Render("  A wallet lets you:\n"))
-	b.WriteString(DimStyle.Render("  • Check balances across chains\n"))
-	b.WriteString(DimStyle.Render("  • Send and receive crypto\n"))
-	b.WriteString(DimStyle.Render("  • Interact with DeFi protocols\n\n"))
-	b.WriteString(m.walletSelector.View())
+	errLine := ""
 	if m.passwordError != "" {
-		b.WriteString(fmt.Sprintf("\n%s\n", ErrorStyle.Render("✗ "+m.passwordError)))
+		errLine = "\n" + ErrorStyle.Render("✗ "+m.passwordError) + "\n"
 	}
-	return b.String()
+	return "\n" +
+		DimStyle.Render("  A wallet lets you:\n  • Check balances across chains\n  • Send and receive crypto\n  • Interact with DeFi protocols\n\n") +
+		m.walletSelector.View() + errLine
 }
 
 func (m WizardModel) viewWalletPassword() string {
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(TitleStyle.Render("  Create Wallet Password"))
-	b.WriteString("\n\n")
-
-	b.WriteString(DimStyle.Render("  This encrypts your wallet on disk.\n"))
-	b.WriteString(DimStyle.Render("  Requirements: 8+ characters\n\n"))
-
+	base := "\n" + TitleStyle.Render("  Create Wallet Password") + "\n\n" +
+		DimStyle.Render("  This encrypts your wallet on disk.\n  Requirements: 8+ characters\n\n")
 	if m.passwordStep == 0 {
-		b.WriteString("  ")
-		b.WriteString(m.passwordInput.View())
-		b.WriteString("\n")
+		base += "  " + m.passwordInput.View() + "\n"
 	} else {
-		b.WriteString(fmt.Sprintf("  Password: %s\n\n", SuccessStyle.Render("✓ set")))
-		b.WriteString("  ")
-		b.WriteString(m.confirmInput.View())
-		b.WriteString("\n")
+		base += fmt.Sprintf("  Password: %s\n\n  %s\n", SuccessStyle.Render("✓ set"), m.confirmInput.View())
 	}
 
 	if m.passwordError != "" {
-		b.WriteString(fmt.Sprintf("\n  %s\n", ErrorStyle.Render("✗ "+m.passwordError)))
+		base += "\n  " + ErrorStyle.Render("✗ "+m.passwordError) + "\n"
 	}
 
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  Enter to continue • Esc back"))
-	return b.String()
+	return base + "\n" + HelpStyle.Render("  Enter to continue • Esc back")
 }
 
 func (m WizardModel) viewComplete() string {
@@ -850,10 +759,8 @@ func (m WizardModel) viewComplete() string {
 }
 
 func (m WizardModel) providerName(id llm.ProviderID) string {
-	for _, p := range m.providerList {
-		if p.id == id {
-			return p.name
-		}
+	if name := providerNames[id]; name != "" {
+		return name
 	}
 	return string(id)
 }

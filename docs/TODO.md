@@ -32,3 +32,10 @@
 - [ ] Integration tests with mocked testnet RPCs; CLI command coverage (internal/cli).
 - [x] OpenRouter live tool-call canary (env-gated) exists; expand with more scenarios (Claude + tools, receipts, send preview) and make it easy to add future scenarios.
 - [ ] Release workflow (goreleaser/GitHub releases), Homebrew formula, Docker image.
+
+---
+
+## Codebase Minimalism (keep features, fewer lines)
+- [x] Introduce a repeatable "minimal LOC" workflow (see Codex skill: `clifi-minimal-loc`).
+- [ ] Continue pruning top offenders without changing behavior (targets: `internal/agent/loop.go`, `internal/llm/openai.go`, `internal/cli/repl.go`).
+- [ ] Reduce provider/tool-call duplication via table-driven adapters and shared request/response plumbing (avoid rework per-provider).
