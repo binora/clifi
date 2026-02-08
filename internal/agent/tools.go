@@ -138,6 +138,16 @@ func requireHexAddress(label, v string) (common.Address, error) {
 	return common.HexToAddress(v), nil
 }
 
+func kvBlock(title string, items ...KVItem) UIBlock {
+	return UIBlock{
+		Kind: UIBlockKV,
+		KV: &UIKV{
+			Title: title,
+			Items: items,
+		},
+	}
+}
+
 type getBalancesInput struct {
 	Address string   `json:"address"`
 	Chains  []string `json:"chains"`
@@ -402,6 +412,36 @@ type approveTokenInput struct {
 	Wait         *bool  `json:"wait"`
 }
 
+func (tr *ToolRegistry) prepareTxFrom(chainName, from string) (common.Address, *chain.ChainConfig, error) {
+	if chainName == "" {
+		return common.Address{}, nil, fmt.Errorf("chain is required")
+	}
+
+	km, err := tr.keystore()
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	accounts := km.ListAccounts()
+	if len(accounts) == 0 {
+		return common.Address{}, nil, fmt.Errorf("no wallets found in keystore")
+	}
+
+	fromAddr := accounts[0].Address
+	if from != "" {
+		a, err := requireHexAddress("from address", from)
+		if err != nil {
+			return common.Address{}, nil, err
+		}
+		fromAddr = a
+	}
+
+	cfg, err := tr.chainClient.GetChainConfig(chainName)
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	return fromAddr, cfg, nil
+}
+
 func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -410,11 +450,9 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 	if err := parseToolInput(input, &params); err != nil {
 		return ToolOutput{}, err
 	}
-	if params.To == "" || !common.IsHexAddress(params.To) {
-		return ToolOutput{}, fmt.Errorf("invalid recipient address")
-	}
-	if params.Chain == "" {
-		return ToolOutput{}, fmt.Errorf("chain is required")
+	toAddr, err := requireHexAddress("recipient address", params.To)
+	if err != nil {
+		return ToolOutput{}, err
 	}
 	if params.AmountETH == "" {
 		return ToolOutput{}, fmt.Errorf("amount_eth is required")
@@ -428,24 +466,7 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		return ToolOutput{}, fmt.Errorf("amount_eth must be greater than zero")
 	}
 
-	km, err := tr.keystore()
-	if err != nil {
-		return ToolOutput{}, err
-	}
-	accounts := km.ListAccounts()
-	if len(accounts) == 0 {
-		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
-	}
-
-	fromAddr := accounts[0].Address
-	if params.From != "" {
-		if !common.IsHexAddress(params.From) {
-			return ToolOutput{}, fmt.Errorf("invalid from address")
-		}
-		fromAddr = common.HexToAddress(params.From)
-	}
-
-	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
+	fromAddr, cfg, err := tr.prepareTxFrom(params.Chain, params.From)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -453,7 +474,7 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 	intent := tx.Intent{
 		Chain:    params.Chain,
 		From:     fromAddr,
-		To:       common.HexToAddress(params.To),
+		To:       toAddr,
 		ValueWei: wei,
 	}
 	if err := tx.Validate(intent, loadPolicy()); err != nil {
@@ -501,20 +522,16 @@ func (tr *ToolRegistry) handleSendNative(ctx context.Context, input json.RawMess
 		result += "\n" + line
 	}
 
-	block := UIBlock{
-		Kind: UIBlockKV,
-		KV: &UIKV{
-			Title: "Native send",
-			Items: []KVItem{
-				{Key: "Chain", Value: params.Chain},
-				{Key: "From", Value: fromAddr.Hex()},
-				{Key: "To", Value: params.To},
-				{Key: "Amount", Value: params.AmountETH + " ETH"},
-				{Key: "Tx", Value: signed.Hash().Hex()},
-			},
-		},
-	}
-	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
+	return ToolOutput{
+		Text: result,
+		Blocks: []UIBlock{kvBlock("Native send",
+			KVItem{Key: "Chain", Value: params.Chain},
+			KVItem{Key: "From", Value: fromAddr.Hex()},
+			KVItem{Key: "To", Value: params.To},
+			KVItem{Key: "Amount", Value: params.AmountETH + " ETH"},
+			KVItem{Key: "Tx", Value: signed.Hash().Hex()},
+		)},
+	}, nil
 }
 
 func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
@@ -525,41 +542,22 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	if err := parseToolInput(input, &params); err != nil {
 		return ToolOutput{}, err
 	}
-	if params.To == "" || !common.IsHexAddress(params.To) {
-		return ToolOutput{}, fmt.Errorf("invalid recipient address")
+	toAddr, err := requireHexAddress("recipient address", params.To)
+	if err != nil {
+		return ToolOutput{}, err
 	}
-	if params.Token == "" || !common.IsHexAddress(params.Token) {
-		return ToolOutput{}, fmt.Errorf("invalid token address")
-	}
-	if params.Chain == "" {
-		return ToolOutput{}, fmt.Errorf("chain is required")
+	tokenAddr, err := requireHexAddress("token address", params.Token)
+	if err != nil {
+		return ToolOutput{}, err
 	}
 	if params.AmountTokens == "" {
 		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
 	}
 
-	km, err := tr.keystore()
+	fromAddr, cfg, err := tr.prepareTxFrom(params.Chain, params.From)
 	if err != nil {
 		return ToolOutput{}, err
 	}
-	accounts := km.ListAccounts()
-	if len(accounts) == 0 {
-		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
-	}
-	fromAddr := accounts[0].Address
-	if params.From != "" {
-		if !common.IsHexAddress(params.From) {
-			return ToolOutput{}, fmt.Errorf("invalid from address")
-		}
-		fromAddr = common.HexToAddress(params.From)
-	}
-
-	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-
-	tokenAddr := common.HexToAddress(params.Token)
 
 	decimals, symbol := uint8(18), "TOKEN"
 	decimals, symbol = queryTokenMeta(ctx, tr.chainClient, params.Chain, tokenAddr, decimals, symbol)
@@ -572,7 +570,7 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
 	}
 
-	data, err := buildERC20TransferData(common.HexToAddress(params.To), amountWei)
+	data, err := buildERC20TransferData(toAddr, amountWei)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -618,21 +616,17 @@ func (tr *ToolRegistry) handleSendToken(ctx context.Context, input json.RawMessa
 	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
 		result += "\n" + line
 	}
-	block := UIBlock{
-		Kind: UIBlockKV,
-		KV: &UIKV{
-			Title: "ERC20 send",
-			Items: []KVItem{
-				{Key: "Chain", Value: params.Chain},
-				{Key: "From", Value: fromAddr.Hex()},
-				{Key: "To", Value: params.To},
-				{Key: "Token", Value: params.Token},
-				{Key: "Amount", Value: params.AmountTokens + " " + symbol},
-				{Key: "Tx", Value: signed.Hash().Hex()},
-			},
-		},
-	}
-	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
+	return ToolOutput{
+		Text: result,
+		Blocks: []UIBlock{kvBlock("ERC20 send",
+			KVItem{Key: "Chain", Value: params.Chain},
+			KVItem{Key: "From", Value: fromAddr.Hex()},
+			KVItem{Key: "To", Value: params.To},
+			KVItem{Key: "Token", Value: params.Token},
+			KVItem{Key: "Amount", Value: params.AmountTokens + " " + symbol},
+			KVItem{Key: "Tx", Value: signed.Hash().Hex()},
+		)},
+	}, nil
 }
 
 func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
@@ -643,41 +637,22 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	if err := parseToolInput(input, &params); err != nil {
 		return ToolOutput{}, err
 	}
-	if params.Spender == "" || !common.IsHexAddress(params.Spender) {
-		return ToolOutput{}, fmt.Errorf("invalid spender address")
+	spenderAddr, err := requireHexAddress("spender address", params.Spender)
+	if err != nil {
+		return ToolOutput{}, err
 	}
-	if params.Token == "" || !common.IsHexAddress(params.Token) {
-		return ToolOutput{}, fmt.Errorf("invalid token address")
-	}
-	if params.Chain == "" {
-		return ToolOutput{}, fmt.Errorf("chain is required")
+	tokenAddr, err := requireHexAddress("token address", params.Token)
+	if err != nil {
+		return ToolOutput{}, err
 	}
 	if params.AmountTokens == "" {
 		return ToolOutput{}, fmt.Errorf("amount_tokens is required")
 	}
 
-	km, err := tr.keystore()
+	fromAddr, cfg, err := tr.prepareTxFrom(params.Chain, params.From)
 	if err != nil {
 		return ToolOutput{}, err
 	}
-	accounts := km.ListAccounts()
-	if len(accounts) == 0 {
-		return ToolOutput{}, fmt.Errorf("no wallets found in keystore")
-	}
-	fromAddr := accounts[0].Address
-	if params.From != "" {
-		if !common.IsHexAddress(params.From) {
-			return ToolOutput{}, fmt.Errorf("invalid from address")
-		}
-		fromAddr = common.HexToAddress(params.From)
-	}
-
-	cfg, err := tr.chainClient.GetChainConfig(params.Chain)
-	if err != nil {
-		return ToolOutput{}, err
-	}
-
-	tokenAddr := common.HexToAddress(params.Token)
 	decimals, symbol := uint8(18), "TOKEN"
 	decimals, symbol = queryTokenMeta(ctx, tr.chainClient, params.Chain, tokenAddr, decimals, symbol)
 
@@ -689,7 +664,7 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 		return ToolOutput{}, fmt.Errorf("amount_tokens must be greater than zero")
 	}
 
-	data, err := buildERC20ApproveData(common.HexToAddress(params.Spender), amountWei)
+	data, err := buildERC20ApproveData(spenderAddr, amountWei)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -735,21 +710,17 @@ func (tr *ToolRegistry) handleApproveToken(ctx context.Context, input json.RawMe
 	if line, _ := tr.maybeWaitAndPersistReceipt(ctx, params.Chain, signed.Hash(), params.Wait); line != "" {
 		result += "\n" + line
 	}
-	block := UIBlock{
-		Kind: UIBlockKV,
-		KV: &UIKV{
-			Title: "ERC20 approval",
-			Items: []KVItem{
-				{Key: "Chain", Value: params.Chain},
-				{Key: "From", Value: fromAddr.Hex()},
-				{Key: "Spender", Value: params.Spender},
-				{Key: "Token", Value: params.Token},
-				{Key: "Allowance", Value: params.AmountTokens + " " + symbol},
-				{Key: "Tx", Value: signed.Hash().Hex()},
-			},
-		},
-	}
-	return ToolOutput{Text: result, Blocks: []UIBlock{block}}, nil
+	return ToolOutput{
+		Text: result,
+		Blocks: []UIBlock{kvBlock("ERC20 approval",
+			KVItem{Key: "Chain", Value: params.Chain},
+			KVItem{Key: "From", Value: fromAddr.Hex()},
+			KVItem{Key: "Spender", Value: params.Spender},
+			KVItem{Key: "Token", Value: params.Token},
+			KVItem{Key: "Allowance", Value: params.AmountTokens + " " + symbol},
+			KVItem{Key: "Tx", Value: signed.Hash().Hex()},
+		)},
+	}, nil
 }
 
 type getReceiptInput struct {
