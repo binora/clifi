@@ -118,7 +118,11 @@ func (s *Selector) View() string {
 			b.WriteString("  ")
 		}
 
-		label := fmt.Sprintf("%-35s", item.ID)
+		display := item.Label
+		if display == "" {
+			display = item.ID
+		}
+		label := fmt.Sprintf("%-35s", display)
 		if isCursor {
 			b.WriteString(SelectorActive.Render(label))
 		} else {

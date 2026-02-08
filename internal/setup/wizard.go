@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/yolodolo42/clifi/internal/auth"
 	"github.com/yolodolo42/clifi/internal/llm"
+	"github.com/yolodolo42/clifi/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -25,7 +26,6 @@ const (
 	StepOAuthWaiting
 	StepWalletChoice
 	StepWalletPassword
-	StepWalletConfirm
 	StepComplete
 )
 
@@ -46,37 +46,33 @@ type WizardModel struct {
 	dataDir  string
 	width    int
 	height   int
-	err      error
 	quitting bool
 
 	// Provider step
 	providerList     []providerItem
-	providerCursor   int
+	providerSelector ui.Selector
 	selectedProvider llm.ProviderID
 	apiKeyInput      textinput.Model
 	validatingKey    bool
-	keyValidated     bool
 	keyError         string
 	envKeyDetected   bool
 	envKeyProvider   llm.ProviderID
 
 	// Auth method step
-	authMethods      []authMethodItem
-	authMethodCursor int
-	selectedAuth     string // "api" or "oauth"
-	oauthInProgress  bool
-	oauthError       string
+	authSelector    ui.Selector
+	selectedAuth    string // "api" or "oauth"
+	oauthInProgress bool
+	oauthError      string
 
 	// Wallet step
-	walletChoices []string
-	walletCursor  int
-	walletChoice  string
-	passwordInput textinput.Model
-	confirmInput  textinput.Model
-	passwordStep  int // 0=enter, 1=confirm
-	passwordError string
-	walletCreated bool
-	walletAddress string
+	walletChoices  []string
+	walletSelector ui.Selector
+	passwordInput  textinput.Model
+	confirmInput   textinput.Model
+	passwordStep   int // 0=enter, 1=confirm
+	passwordError  string
+	walletCreated  bool
+	walletAddress  string
 
 	// UI
 	spinner  spinner.Model
@@ -113,6 +109,50 @@ type oauthCompleteMsg struct {
 type walletCreatedMsg struct {
 	address string
 	err     error
+}
+
+func providerSelectorItems(providers []providerItem) []ui.SelectorItem {
+	items := make([]ui.SelectorItem, 0, len(providers))
+	for _, p := range providers {
+		desc := p.description
+		if p.recommended {
+			desc = "recommended - " + desc
+		}
+		items = append(items, ui.SelectorItem{
+			ID:          string(p.id),
+			Label:       p.name,
+			Description: desc,
+		})
+	}
+	return items
+}
+
+func authSelectorItems(methods []authMethodItem) []ui.SelectorItem {
+	items := make([]ui.SelectorItem, 0, len(methods))
+	for _, m := range methods {
+		items = append(items, ui.SelectorItem{
+			ID:          m.authType,
+			Label:       m.label,
+			Description: m.description,
+		})
+	}
+	return items
+}
+
+func walletSelectorItems(choices []string) []ui.SelectorItem {
+	items := make([]ui.SelectorItem, 0, len(choices))
+	for i, c := range choices {
+		desc := ""
+		if i == 1 {
+			desc = "disabled"
+		}
+		items = append(items, ui.SelectorItem{
+			ID:          fmt.Sprintf("%d", i),
+			Label:       c,
+			Description: desc,
+		})
+	}
+	return items
 }
 
 // NewWizard creates a new wizard model
@@ -169,17 +209,22 @@ func NewWizard(dataDir string) *WizardModel {
 		"Continue without wallet",
 	}
 
+	providerSelector := ui.NewSelector("Choose an LLM provider", providerSelectorItems(providers))
+	walletSelector := ui.NewSelector("Set up wallet (optional)", walletSelectorItems(walletChoices))
+
 	m := &WizardModel{
-		step:          StepWelcome,
-		status:        status,
-		dataDir:       dataDir,
-		providerList:  providers,
-		walletChoices: walletChoices,
-		spinner:       sp,
-		progress:      prog,
-		apiKeyInput:   apiInput,
-		passwordInput: passInput,
-		confirmInput:  confirmInput,
+		step:             StepWelcome,
+		status:           status,
+		dataDir:          dataDir,
+		providerList:     providers,
+		providerSelector: providerSelector,
+		walletChoices:    walletChoices,
+		walletSelector:   walletSelector,
+		spinner:          sp,
+		progress:         prog,
+		apiKeyInput:      apiInput,
+		passwordInput:    passInput,
+		confirmInput:     confirmInput,
 	}
 
 	// Check for environment keys
@@ -222,20 +267,12 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global keys
+		// Global keys (don't swallow Esc; selectors use it).
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.result = &SetupResult{Cancelled: true}
 			m.quitting = true
 			return m, tea.Quit
-		case tea.KeyEsc:
-			if m.step > StepWelcome && m.step < StepComplete {
-				m.step--
-				m.err = nil
-				m.keyError = ""
-				m.passwordError = ""
-				return m, nil
-			}
 		}
 
 		// Step-specific handling
@@ -259,12 +296,34 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAuthMethod(msg)
 
 		case StepProviderKey:
+			if msg.Type == tea.KeyEsc {
+				m.apiKeyInput.Blur()
+				m.apiKeyInput.Reset()
+				m.keyError = ""
+				// If we skipped auth selection (single method), go back to provider select.
+				if len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) <= 1 {
+					m.step = StepProviderSelect
+				} else {
+					m.step = StepAuthMethod
+				}
+				return m, nil
+			}
 			if msg.Type == tea.KeyEnter {
 				return m.updateProviderKey(msg)
 			}
 			// Fall through to let input update happen
 
 		case StepOAuthWaiting:
+			if msg.Type == tea.KeyEsc {
+				m.oauthInProgress = false
+				m.oauthError = ""
+				if len(auth.GetProviderAuthInfo(m.selectedProvider).Methods) <= 1 {
+					m.step = StepProviderSelect
+				} else {
+					m.step = StepAuthMethod
+				}
+				return m, nil
+			}
 			// OAuth is in progress, just wait
 			return m, nil
 
@@ -272,6 +331,14 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWalletChoice(msg)
 
 		case StepWalletPassword:
+			if msg.Type == tea.KeyEsc {
+				m.passwordStep = 0
+				m.passwordError = ""
+				m.passwordInput.Reset()
+				m.confirmInput.Reset()
+				m.step = StepWalletChoice
+				return m, nil
+			}
 			if msg.Type == tea.KeyEnter {
 				return m.updateWalletPassword(msg)
 			}
@@ -293,6 +360,9 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.progress.Width = min(40, msg.Width-20)
+		m.providerSelector.SetWidth(msg.Width)
+		m.authSelector.SetWidth(msg.Width)
+		m.walletSelector.SetWidth(msg.Width)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -302,7 +372,6 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case keyValidatedMsg:
 		m.validatingKey = false
 		if msg.success {
-			m.keyValidated = true
 			m.keyError = ""
 			if err := m.saveProviderKey(); err != nil {
 				m.keyError = fmt.Sprintf("Failed to save: %v", err)
@@ -398,53 +467,36 @@ func formatKeyError(err error, provider llm.ProviderID) string {
 }
 
 func (m WizardModel) updateProviderSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyUp:
-		if m.providerCursor > 0 {
-			m.providerCursor--
-		}
-	case tea.KeyDown:
-		if m.providerCursor < len(m.providerList)-1 {
-			m.providerCursor++
-		}
-	case tea.KeyEnter:
-		m.selectedProvider = m.providerList[m.providerCursor].id
-
-		// Build auth methods for selected provider
-		m.authMethods = nil
-		m.authMethodCursor = 0
-		for _, method := range auth.GetProviderAuthInfo(m.selectedProvider).Methods {
-			m.authMethods = append(m.authMethods, authMethodItem{
-				authType:    method.Type,
-				label:       method.Label,
-				description: method.Description,
-			})
-		}
-
-		// If only one auth method (API key), skip selection
-		if len(m.authMethods) == 1 {
-			m.selectedAuth = m.authMethods[0].authType
-			m.apiKeyInput.Focus()
-			m.step = StepProviderKey
-		} else {
-			m.step = StepAuthMethod
-		}
+	_, cmd := m.providerSelector.Update(msg)
+	if cmd != nil {
+		return m, cmd
 	}
-	return m, nil
-}
 
-func (m WizardModel) updateAuthMethod(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyUp:
-		if m.authMethodCursor > 0 {
-			m.authMethodCursor--
-		}
-	case tea.KeyDown:
-		if m.authMethodCursor < len(m.authMethods)-1 {
-			m.authMethodCursor++
-		}
-	case tea.KeyEnter:
-		m.selectedAuth = m.authMethods[m.authMethodCursor].authType
+	if m.providerSelector.Active() {
+		return m, nil
+	}
+
+	if m.providerSelector.Cancelled() {
+		m.step = StepWelcome
+		m.providerSelector = ui.NewSelector("Choose an LLM provider", providerSelectorItems(m.providerList))
+		return m, nil
+	}
+
+	m.selectedProvider = llm.ProviderID(m.providerSelector.Selected())
+
+	methods := auth.GetProviderAuthInfo(m.selectedProvider).Methods
+	authMethods := make([]authMethodItem, 0, len(methods))
+	for _, method := range methods {
+		authMethods = append(authMethods, authMethodItem{
+			authType:    method.Type,
+			label:       method.Label,
+			description: method.Description,
+		})
+	}
+
+	// If only one auth method (API key), skip selection
+	if len(authMethods) == 1 {
+		m.selectedAuth = authMethods[0].authType
 		if m.selectedAuth == "oauth" {
 			m.oauthInProgress = true
 			m.oauthError = ""
@@ -453,7 +505,40 @@ func (m WizardModel) updateAuthMethod(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.apiKeyInput.Focus()
 		m.step = StepProviderKey
+		return m, nil
 	}
+
+	m.authSelector = ui.NewSelector("Choose authentication method", authSelectorItems(authMethods))
+	m.step = StepAuthMethod
+	return m, nil
+}
+
+func (m WizardModel) updateAuthMethod(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	_, cmd := m.authSelector.Update(msg)
+	if cmd != nil {
+		return m, cmd
+	}
+
+	if m.authSelector.Active() {
+		return m, nil
+	}
+
+	if m.authSelector.Cancelled() {
+		m.step = StepProviderSelect
+		m.providerSelector = ui.NewSelector("Choose an LLM provider", providerSelectorItems(m.providerList))
+		return m, nil
+	}
+
+	m.selectedAuth = m.authSelector.Selected()
+	if m.selectedAuth == "oauth" {
+		m.oauthInProgress = true
+		m.oauthError = ""
+		m.step = StepOAuthWaiting
+		return m, m.startOAuthFlow()
+	}
+
+	m.apiKeyInput.Focus()
+	m.step = StepProviderKey
 	return m, nil
 }
 
@@ -477,30 +562,36 @@ func (m WizardModel) updateProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m WizardModel) updateWalletChoice(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyUp:
-		if m.walletCursor > 0 {
-			m.walletCursor--
-		}
-	case tea.KeyDown:
-		if m.walletCursor < len(m.walletChoices)-1 {
-			m.walletCursor++
-		}
-	case tea.KeyEnter:
-		m.walletChoice = m.walletChoices[m.walletCursor]
-		switch m.walletCursor {
-		case 0: // Create new wallet
-			m.passwordInput.Focus()
-			m.step = StepWalletPassword
-			m.passwordStep = 0
-		case 1: // Import - coming soon
-			m.passwordError = "Import wallet coming soon. Choose another option."
-			return m, nil
-		case 2: // Skip
-			m.step = StepComplete
-		}
+	_, cmd := m.walletSelector.Update(msg)
+	if cmd != nil {
+		return m, cmd
 	}
-	return m, nil
+
+	if m.walletSelector.Active() {
+		return m, nil
+	}
+
+	if m.walletSelector.Cancelled() {
+		m.step = StepProviderSelect
+		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems(m.walletChoices))
+		return m, nil
+	}
+
+	choice := m.walletSelector.Selected()
+	switch choice {
+	case "0": // create
+		m.passwordInput.Focus()
+		m.step = StepWalletPassword
+		m.passwordStep = 0
+		return m, nil
+	case "1": // import disabled
+		m.passwordError = "Import wallet coming soon. Choose another option."
+		m.walletSelector = ui.NewSelector("Set up wallet (optional)", walletSelectorItems(m.walletChoices))
+		return m, nil
+	default: // skip
+		m.step = StepComplete
+		return m, nil
+	}
 }
 
 func (m WizardModel) updateWalletPassword(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -572,7 +663,7 @@ func (m WizardModel) renderProgress() string {
 	switch m.step {
 	case StepProviderSelect, StepAuthMethod, StepProviderKey, StepOAuthWaiting:
 		currentStep = 1
-	case StepWalletChoice, StepWalletPassword, StepWalletConfirm:
+	case StepWalletChoice, StepWalletPassword:
 		currentStep = 2
 	case StepComplete:
 		currentStep = 3
@@ -592,13 +683,7 @@ func (m WizardModel) viewWelcome() string {
 	// Check for detected env key
 	if m.envKeyDetected {
 		envVar := llm.EnvVarForProvider(m.envKeyProvider)
-		providerName := string(m.envKeyProvider)
-		for _, p := range m.providerList {
-			if p.id == m.envKeyProvider {
-				providerName = p.name
-				break
-			}
-		}
+		providerName := m.providerName(m.envKeyProvider)
 
 		box := BoxStyle.Render(
 			TitleStyle.Render("Welcome to clifi") + "\n" +
@@ -624,80 +709,16 @@ func (m WizardModel) viewWelcome() string {
 }
 
 func (m WizardModel) viewProviderSelect() string {
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(TitleStyle.Render("  Choose an LLM Provider"))
-	b.WriteString("\n\n")
-	b.WriteString(SubtitleStyle.Render("  clifi uses AI to understand your requests.\n"))
-	b.WriteString("\n")
-
-	for i, p := range m.providerList {
-		cursor := "  "
-		if i == m.providerCursor {
-			cursor = CursorStyle.Render("> ")
-		}
-
-		name := p.name
-		desc := DimStyle.Render(fmt.Sprintf(" - %s", p.description))
-
-		if i == m.providerCursor {
-			name = SelectedStyle.Render(name)
-		} else {
-			name = NormalStyle.Render(name)
-		}
-
-		suffix := ""
-		if p.recommended {
-			suffix = SuccessStyle.Render(" ★")
-		}
-
-		b.WriteString(fmt.Sprintf("%s%s%s%s\n", cursor, name, suffix, desc))
-	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  ↑/↓ move • Enter select • Esc back"))
-	return b.String()
+	return "\n" + m.providerSelector.View()
 }
 
 func (m WizardModel) viewAuthMethod() string {
 	var b strings.Builder
 	b.WriteString("\n")
-
-	providerName := string(m.selectedProvider)
-	for _, p := range m.providerList {
-		if p.id == m.selectedProvider {
-			providerName = p.name
-			break
-		}
-	}
-
-	b.WriteString(TitleStyle.Render(fmt.Sprintf("  How do you want to connect to %s?", providerName)))
-	b.WriteString("\n\n")
-
-	for i, method := range m.authMethods {
-		cursor := "  "
-		if i == m.authMethodCursor {
-			cursor = CursorStyle.Render("> ")
-		}
-
-		label := method.label
-		desc := DimStyle.Render(fmt.Sprintf(" - %s", method.description))
-
-		if i == m.authMethodCursor {
-			label = SelectedStyle.Render(label)
-		} else {
-			label = NormalStyle.Render(label)
-		}
-
-		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, label, desc))
-	}
-
+	b.WriteString(m.authSelector.View())
 	if m.oauthError != "" {
-		b.WriteString(fmt.Sprintf("\n  %s\n", ErrorStyle.Render("✗ "+m.oauthError)))
+		b.WriteString(fmt.Sprintf("\n%s\n", ErrorStyle.Render("✗ "+m.oauthError)))
 	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  ↑/↓ move • Enter select • Esc back"))
 	return b.String()
 }
 
@@ -705,13 +726,7 @@ func (m WizardModel) viewOAuthWaiting() string {
 	var b strings.Builder
 	b.WriteString("\n")
 
-	providerName := string(m.selectedProvider)
-	for _, p := range m.providerList {
-		if p.id == m.selectedProvider {
-			providerName = p.name
-			break
-		}
-	}
+	providerName := m.providerName(m.selectedProvider)
 
 	b.WriteString(TitleStyle.Render(fmt.Sprintf("  Connecting to %s", providerName)))
 	b.WriteString("\n\n")
@@ -728,13 +743,7 @@ func (m WizardModel) viewProviderKey() string {
 	var b strings.Builder
 	b.WriteString("\n")
 
-	providerName := string(m.selectedProvider)
-	for _, p := range m.providerList {
-		if p.id == m.selectedProvider {
-			providerName = p.name
-			break
-		}
-	}
+	providerName := m.providerName(m.selectedProvider)
 
 	b.WriteString(TitleStyle.Render(fmt.Sprintf("  Enter %s API Key", providerName)))
 	b.WriteString("\n\n")
@@ -776,43 +785,14 @@ func (m WizardModel) viewProviderKey() string {
 func (m WizardModel) viewWalletChoice() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(TitleStyle.Render("  Set Up Wallet"))
-	b.WriteString(SubtitleStyle.Render(" (optional)"))
-	b.WriteString("\n\n")
-
-	// Explain what wallet does
 	b.WriteString(DimStyle.Render("  A wallet lets you:\n"))
 	b.WriteString(DimStyle.Render("  • Check balances across chains\n"))
 	b.WriteString(DimStyle.Render("  • Send and receive crypto\n"))
-	b.WriteString(DimStyle.Render("  • Interact with DeFi protocols\n"))
-	b.WriteString("\n")
-
-	for i, choice := range m.walletChoices {
-		cursor := "  "
-		if i == m.walletCursor {
-			cursor = CursorStyle.Render("> ")
-		}
-
-		text := choice
-		switch { //nolint:staticcheck // Can't use tagged switch with dynamic m.walletCursor
-		case i == m.walletCursor:
-			text = SelectedStyle.Render(text)
-		case i == 1:
-			// Import option is disabled
-			text = DimStyle.Render(text)
-		default:
-			text = NormalStyle.Render(text)
-		}
-
-		b.WriteString(fmt.Sprintf("%s%s\n", cursor, text))
-	}
-
+	b.WriteString(DimStyle.Render("  • Interact with DeFi protocols\n\n"))
+	b.WriteString(m.walletSelector.View())
 	if m.passwordError != "" {
-		b.WriteString(fmt.Sprintf("\n  %s\n", ErrorStyle.Render("✗ "+m.passwordError)))
+		b.WriteString(fmt.Sprintf("\n%s\n", ErrorStyle.Render("✗ "+m.passwordError)))
 	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("  ↑/↓ move • Enter select • Esc back"))
 	return b.String()
 }
 
@@ -849,13 +829,7 @@ func (m WizardModel) viewComplete() string {
 	var b strings.Builder
 	b.WriteString("\n\n")
 
-	providerName := string(m.selectedProvider)
-	for _, p := range m.providerList {
-		if p.id == m.selectedProvider {
-			providerName = p.name
-			break
-		}
-	}
+	providerName := m.providerName(m.selectedProvider)
 
 	walletInfo := DimStyle.Render("Not configured")
 	if m.walletAddress != "" {
@@ -887,6 +861,15 @@ func (m WizardModel) viewComplete() string {
 	b.WriteString("\n\n")
 	b.WriteString(HelpStyle.Render("  Press Enter to start clifi..."))
 	return b.String()
+}
+
+func (m WizardModel) providerName(id llm.ProviderID) string {
+	for _, p := range m.providerList {
+		if p.id == id {
+			return p.name
+		}
+	}
+	return string(id)
 }
 
 // RunWizard runs the setup wizard and returns the result
