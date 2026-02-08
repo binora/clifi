@@ -40,34 +40,7 @@ type Agent struct {
 }
 
 // SystemPrompt is the default system prompt for the crypto agent
-const SystemPrompt = `You are clifi, a terminal-first crypto operator agent. You help users manage their crypto wallets and interact with EVM-compatible blockchains.
-
-## Your Capabilities
-- Query wallet balances across multiple chains (Ethereum, Base, Arbitrum, Optimism, Polygon)
-- List and manage wallets in the local keystore
-- Provide information about supported chains
-
-## Safety-First Approach
-- Always show users what actions you're about to take before executing
-- For read-only operations (balances, info), proceed after confirming the request
-- For state-changing operations (future: send, swap, approve), you MUST:
-  1. First explain what will happen
-  2. Show the exact parameters
-  3. Wait for explicit user confirmation
-
-## Response Style
-- Be concise and direct
-- Use clear formatting for balances and addresses
-- When showing balances, include the chain name and token symbol
-- If an error occurs, explain what went wrong and suggest fixes
-
-## Available Tools
-You have access to tools for querying blockchain state. Use them proactively when users ask about their portfolio, balances, or chain information.
-
-Current limitations:
-- State-changing tools (send/approve) require explicit confirmation (confirm=true) before broadcasting
-- EVM chains only (no Solana, Bitcoin, etc.)
-- Native tokens and ERC20 tokens only`
+const SystemPrompt = "You are clifi, a terminal-first crypto operator agent. You help users manage their crypto wallets and interact with EVM-compatible blockchains.\n\n## Your Capabilities\n- Query wallet balances across multiple chains (Ethereum, Base, Arbitrum, Optimism, Polygon)\n- List and manage wallets in the local keystore\n- Provide information about supported chains\n\n## Safety-First Approach\n- Always show users what actions you're about to take before executing\n- For read-only operations (balances, info), proceed after confirming the request\n- For state-changing operations (future: send, swap, approve), you MUST:\n  1. First explain what will happen\n  2. Show the exact parameters\n  3. Wait for explicit user confirmation\n\n## Response Style\n- Be concise and direct\n- Use clear formatting for balances and addresses\n- When showing balances, include the chain name and token symbol\n- If an error occurs, explain what went wrong and suggest fixes\n\n## Available Tools\nYou have access to tools for querying blockchain state. Use them proactively when users ask about their portfolio, balances, or chain information.\n\nCurrent limitations:\n- State-changing tools (send/approve) require explicit confirmation (confirm=true) before broadcasting\n- EVM chains only (no Solana, Bitcoin, etc.)\n- Native tokens and ERC20 tokens only"
 
 // New creates a new agent with the default provider
 func New(providerID string) (*Agent, error) {
@@ -91,7 +64,7 @@ func New(providerID string) (*Agent, error) {
 	}
 
 	// Try to create the provider
-	provider, err := createProvider(authManager, targetProvider)
+	provider, err := CreateProvider(authManager, targetProvider)
 	if err != nil {
 		// Try to find any connected provider
 		connected := authManager.ListConnected()
@@ -101,7 +74,7 @@ func New(providerID string) (*Agent, error) {
 
 		// Use the first connected provider
 		for _, pid := range connected {
-			provider, err = createProvider(authManager, pid)
+			provider, err = CreateProvider(authManager, pid)
 			if err == nil {
 				break
 			}
@@ -155,11 +128,6 @@ func CreateProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.P
 	}
 }
 
-// createProvider is a thin wrapper kept for internal backward-compatibility.
-func createProvider(authManager *auth.Manager, providerID llm.ProviderID) (llm.Provider, error) {
-	return CreateProvider(authManager, providerID)
-}
-
 // getProviderKey returns either an OAuth access token or API key for a provider.
 // OAuth tokens are preferred when available since they may be fresher.
 func getProviderKey(authManager *auth.Manager, providerID llm.ProviderID) (string, error) {
@@ -200,15 +168,17 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 		return nil, fmt.Errorf("agent provider not initialized")
 	}
 
+	providerID := string(a.provider.ID())
 	a.conversation = append(a.conversation, llm.Message{
 		Role:    "user",
 		Content: userMessage,
 	})
 
 	a.ensureSession()
-	a.log(sessionRecord{TS: nowTS(), Type: "user", Content: userMessage, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
-
 	modelID := a.provider.DefaultModel()
+	log := func(r sessionRecord) { r.TS, r.Provider, r.Model = nowTS(), providerID, modelID; a.log(r) }
+	log(sessionRecord{Type: "user", Content: userMessage})
+
 	openRouterKey := a.getOpenRouterAPIKey()
 
 	tools := a.toolRegistry.GetTools()
@@ -221,7 +191,7 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 			Type:    "content",
 			Content: fmt.Sprintf("Tools disabled for model %s; running without on-chain tools. Switch to a tool-capable model%s for balances/wallet actions.", modelID, suggestion),
 		})
-		a.log(sessionRecord{TS: nowTS(), Type: "assistant", Content: events[len(events)-1].Content, Provider: string(a.provider.ID()), Model: modelID})
+		log(sessionRecord{Type: "assistant", Content: events[len(events)-1].Content})
 	}
 
 	req := &llm.ChatRequest{
@@ -237,7 +207,7 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 
 	for len(response.ToolCalls) > 0 {
 		toolCalls := response.ToolCalls
-		toolResults, toolEvents := a.executeToolCallsWithEvents(ctx, toolCalls)
+		toolResults, toolEvents := a.executeToolCallsWithEvents(ctx, log, toolCalls)
 		events = append(events, toolEvents...)
 
 		response, err = a.continueWithToolResults(ctx, req, toolCalls, toolResults)
@@ -256,7 +226,7 @@ func (a *Agent) ChatWithEvents(ctx context.Context, userMessage string) ([]ChatE
 			Type:    "content",
 			Content: response.Content,
 		})
-		a.log(sessionRecord{TS: nowTS(), Type: "assistant", Content: response.Content, Provider: string(a.provider.ID()), Model: modelID})
+		log(sessionRecord{Type: "assistant", Content: response.Content})
 	}
 
 	return events, nil
@@ -296,7 +266,7 @@ func suggestToolModel(p llm.Provider) string {
 }
 
 // executeToolCallsInternal runs tool calls with optional event emission.
-func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.ToolCall, emitEvent func(ChatEvent)) []llm.ToolResult {
+func (a *Agent) executeToolCallsInternal(ctx context.Context, log func(sessionRecord), toolCalls []llm.ToolCall, emitEvent func(ChatEvent)) []llm.ToolResult {
 	results := make([]llm.ToolResult, len(toolCalls))
 
 	for i, tc := range toolCalls {
@@ -308,7 +278,7 @@ func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.To
 				Args: redactedArgs,
 			})
 		}
-		a.log(sessionRecord{TS: nowTS(), Type: "tool_call", ToolName: tc.Name, Args: redactedArgs, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
+		log(sessionRecord{Type: "tool_call", ToolName: tc.Name, Args: redactedArgs})
 
 		out, err := a.toolRegistry.ExecuteTool(ctx, tc.Name, tc.Input)
 		if err != nil {
@@ -326,7 +296,7 @@ func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.To
 					IsError: true,
 				})
 			}
-			a.log(sessionRecord{TS: nowTS(), Type: "tool_result", ToolName: tc.Name, Text: errContent, IsError: true, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
+			log(sessionRecord{Type: "tool_result", ToolName: tc.Name, Text: errContent, IsError: true})
 		} else {
 			results[i] = llm.ToolResult{
 				ToolUseID: tc.ID,
@@ -342,16 +312,16 @@ func (a *Agent) executeToolCallsInternal(ctx context.Context, toolCalls []llm.To
 					IsError: false,
 				})
 			}
-			a.log(sessionRecord{TS: nowTS(), Type: "tool_result", ToolName: tc.Name, Text: out.Text, Blocks: out.Blocks, IsError: false, Provider: string(a.provider.ID()), Model: a.provider.DefaultModel()})
+			log(sessionRecord{Type: "tool_result", ToolName: tc.Name, Text: out.Text, Blocks: out.Blocks})
 		}
 	}
 	return results
 }
 
 // executeToolCallsWithEvents runs all tool calls and returns results with events for UI.
-func (a *Agent) executeToolCallsWithEvents(ctx context.Context, toolCalls []llm.ToolCall) ([]llm.ToolResult, []ChatEvent) {
+func (a *Agent) executeToolCallsWithEvents(ctx context.Context, log func(sessionRecord), toolCalls []llm.ToolCall) ([]llm.ToolResult, []ChatEvent) {
 	var events []ChatEvent
-	results := a.executeToolCallsInternal(ctx, toolCalls, func(e ChatEvent) {
+	results := a.executeToolCallsInternal(ctx, log, toolCalls, func(e ChatEvent) {
 		events = append(events, e)
 	})
 	return results, events
@@ -416,7 +386,7 @@ func (a *Agent) SetProvider(providerID llm.ProviderID) error {
 		return fmt.Errorf("auth manager not initialized")
 	}
 
-	newProvider, err := createProvider(a.authManager, providerID)
+	newProvider, err := CreateProvider(a.authManager, providerID)
 	if err != nil {
 		return err
 	}
