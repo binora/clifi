@@ -98,50 +98,46 @@ func (p *GeminiProvider) SetModel(modelID string) error {
 	return nil
 }
 
-// Chat sends a message and returns the response
-func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+func (p *GeminiProvider) modelFor(req *ChatRequest) *genai.GenerativeModel {
 	modelName := req.Model
 	if modelName == "" {
 		modelName = p.model
 	}
-
 	model := p.client.GenerativeModel(modelName)
 
-	// Set system instruction
 	if req.SystemPrompt != "" {
-		model.SystemInstruction = &genai.Content{
-			Parts: []genai.Part{genai.Text(req.SystemPrompt)},
-		}
+		model.SystemInstruction = &genai.Content{Parts: []genai.Part{genai.Text(req.SystemPrompt)}}
 	}
 
-	// Configure tools
 	if len(req.Tools) > 0 {
-		var funcDecls []*genai.FunctionDeclaration
+		funcDecls := make([]*genai.FunctionDeclaration, 0, len(req.Tools))
 		for _, tool := range req.Tools {
 			var params map[string]any
-			_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
-
-			funcDecls = append(funcDecls, &genai.FunctionDeclaration{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  convertToSchema(params),
-			})
+			_ = json.Unmarshal(tool.InputSchema, &params) // already validated at registration
+			funcDecls = append(funcDecls, &genai.FunctionDeclaration{Name: tool.Name, Description: tool.Description, Parameters: convertToSchema(params)})
 		}
 		model.Tools = []*genai.Tool{{FunctionDeclarations: funcDecls}}
 	}
 
-	// Build content from messages
-	var contents []*genai.Content
-	for _, msg := range req.Messages {
+	return model
+}
+
+func geminiContents(msgs []Message) []*genai.Content {
+	out := make([]*genai.Content, 0, len(msgs))
+	for _, msg := range msgs {
 		role := "user"
 		if msg.Role == "assistant" {
 			role = "model"
 		}
-		contents = append(contents, &genai.Content{
-			Role:  role,
-			Parts: []genai.Part{genai.Text(msg.Content)},
-		})
+		out = append(out, &genai.Content{Role: role, Parts: []genai.Part{genai.Text(msg.Content)}})
 	}
+	return out
+}
+
+// Chat sends a message and returns the response
+func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	model := p.modelFor(req)
+	contents := geminiContents(req.Messages)
 
 	// Start chat session
 	cs := model.StartChat()
@@ -159,48 +155,8 @@ func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 
 // ChatWithToolResults continues a conversation with tool results
 func (p *GeminiProvider) ChatWithToolResults(ctx context.Context, req *ChatRequest, toolCalls []ToolCall, toolResults []ToolResult) (*ChatResponse, error) {
-	modelName := req.Model
-	if modelName == "" {
-		modelName = p.model
-	}
-
-	model := p.client.GenerativeModel(modelName)
-
-	// Set system instruction
-	if req.SystemPrompt != "" {
-		model.SystemInstruction = &genai.Content{
-			Parts: []genai.Part{genai.Text(req.SystemPrompt)},
-		}
-	}
-
-	// Configure tools
-	if len(req.Tools) > 0 {
-		var funcDecls []*genai.FunctionDeclaration
-		for _, tool := range req.Tools {
-			var params map[string]any
-			_ = json.Unmarshal(tool.InputSchema, &params) // Schema already validated at registration
-
-			funcDecls = append(funcDecls, &genai.FunctionDeclaration{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  convertToSchema(params),
-			})
-		}
-		model.Tools = []*genai.Tool{{FunctionDeclarations: funcDecls}}
-	}
-
-	// Build content from messages
-	var contents []*genai.Content
-	for _, msg := range req.Messages {
-		role := "user"
-		if msg.Role == "assistant" {
-			role = "model"
-		}
-		contents = append(contents, &genai.Content{
-			Role:  role,
-			Parts: []genai.Part{genai.Text(msg.Content)},
-		})
-	}
+	model := p.modelFor(req)
+	contents := geminiContents(req.Messages)
 
 	// Add model message with function calls (only if there are tool calls)
 	if len(toolCalls) > 0 {
