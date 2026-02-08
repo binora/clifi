@@ -82,6 +82,30 @@ type model struct {
 	suggestionIdx int
 }
 
+func (m *model) addMessage(msg chatMessage) {
+	msg.time = time.Now()
+	m.messages = append(m.messages, msg)
+}
+
+func (m *model) addSystem(content string) {
+	m.addMessage(chatMessage{kind: "system", content: content})
+}
+func (m *model) addUser(content string) { m.addMessage(chatMessage{kind: "user", content: content}) }
+func (m *model) addAssistant(content string) {
+	m.addMessage(chatMessage{kind: "assistant", content: content})
+}
+func (m *model) addError(content string) { m.addMessage(chatMessage{kind: "error", content: content}) }
+
+func (m *model) addErrorf(format string, args ...any) { m.addError(fmt.Sprintf(format, args...)) }
+
+func (m *model) addToolCall(name, args string) {
+	m.addMessage(chatMessage{kind: "tool_call", toolName: name, toolArgs: args})
+}
+
+func (m *model) addToolResult(name, content string, blocks []agent.UIBlock) {
+	m.addMessage(chatMessage{kind: "tool_result", toolName: name, content: content, blocks: blocks})
+}
+
 // responseMsg is sent when the agent responds
 type responseMsg struct {
 	events []agent.ChatEvent
@@ -171,12 +195,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.handleCommand(input)
 			}
 
-			// Add user message
-			m.messages = append(m.messages, chatMessage{
-				kind:    "user",
-				content: input,
-				time:    time.Now(),
-			})
+			m.addUser(input)
 
 			// Clear input and start loading
 			m.prompt.Reset()
@@ -211,35 +230,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case responseMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.messages = append(m.messages, chatMessage{
-				kind:    "error",
-				content: msg.err.Error(),
-				time:    time.Now(),
-			})
+			m.addError(msg.err.Error())
 		} else {
 			for _, event := range msg.events {
 				switch event.Type {
 				case "tool_call":
-					m.messages = append(m.messages, chatMessage{
-						kind:     "tool_call",
-						toolName: event.Tool,
-						toolArgs: event.Args,
-						time:     time.Now(),
-					})
+					m.addToolCall(event.Tool, event.Args)
 				case "tool_result":
-					m.messages = append(m.messages, chatMessage{
-						kind:     "tool_result",
-						toolName: event.Tool,
-						content:  event.Content,
-						blocks:   event.Blocks,
-						time:     time.Now(),
-					})
+					m.addToolResult(event.Tool, event.Content, event.Blocks)
 				case "content":
-					m.messages = append(m.messages, chatMessage{
-						kind:    "assistant",
-						content: event.Content,
-						time:    time.Now(),
-					})
+					m.addAssistant(event.Content)
 				}
 			}
 		}
@@ -306,17 +306,9 @@ func (m model) updateModelSelector(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := m.modelSelector.Selected()
 				if selected != "" && selected != m.agent.CurrentModel() {
 					if err := m.agent.SetModel(selected); err != nil {
-						m.messages = append(m.messages, chatMessage{
-							kind:    "error",
-							content: fmt.Sprintf("Failed to switch model: %v", err),
-							time:    time.Now(),
-						})
+						m.addErrorf("Failed to switch model: %v", err)
 					} else {
-						m.messages = append(m.messages, chatMessage{
-							kind:    "system",
-							content: fmt.Sprintf("Switched to %s. Conversation cleared.", selected),
-							time:    time.Now(),
-						})
+						m.addSystem(fmt.Sprintf("Switched to %s. Conversation cleared.", selected))
 					}
 				}
 			}
@@ -488,13 +480,8 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m.handleLogout()
 
 	case "/clear":
-		m.messages = []chatMessage{
-			{
-				kind:    "system",
-				content: "Chat cleared.",
-				time:    time.Now(),
-			},
-		}
+		m.messages = nil
+		m.addSystem("Chat cleared.")
 		if m.agent != nil {
 			m.agent.Reset()
 		}
@@ -520,20 +507,12 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 			helpText.WriteString(fmt.Sprintf("  %-12s %s\n", cmd.name, cmd.description))
 		}
 
-		m.messages = append(m.messages, chatMessage{
-			kind:    "system",
-			content: helpText.String(),
-			time:    time.Now(),
-		})
+		m.addSystem(helpText.String())
 		m.updateViewport()
 		return m, nil
 
 	default:
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Unknown command: %s. Type /help for commands.", cmd),
-			time:    time.Now(),
-		})
+		m.addErrorf("Unknown command: %s. Type /help for commands.", cmd)
 		m.updateViewport()
 		return m, nil
 	}
@@ -547,11 +526,7 @@ func (m model) handleLogout() (tea.Model, tea.Cmd) {
 		_ = os.Remove(authPath)
 	}
 
-	m.messages = append(m.messages, chatMessage{
-		kind:    "system",
-		content: "Credentials cleared. Restart clifi to set up again.",
-		time:    time.Now(),
-	})
+	m.addSystem("Credentials cleared. Restart clifi to set up again.")
 	m.updateViewport()
 	m.quitting = true
 	return m, tea.Quit
@@ -560,31 +535,19 @@ func (m model) handleLogout() (tea.Model, tea.Cmd) {
 // handleModelCommand shows model selector or switches directly
 func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: "Agent not initialized.",
-			time:    time.Now(),
-		})
+		m.addError("Agent not initialized.")
 		m.updateViewport()
 		return m, nil
 	}
 
 	if modelID != "" {
 		if err := m.agent.SetModel(modelID); err != nil {
-			m.messages = append(m.messages, chatMessage{
-				kind:    "error",
-				content: fmt.Sprintf("Failed to switch model: %v", err),
-				time:    time.Now(),
-			})
+			m.addErrorf("Failed to switch model: %v", err)
 			m.updateViewport()
 			return m, nil
 		}
 
-		m.messages = append(m.messages, chatMessage{
-			kind:    "system",
-			content: fmt.Sprintf("Switched to %s. Conversation cleared.", modelID),
-			time:    time.Now(),
-		})
+		m.addSystem(fmt.Sprintf("Switched to %s. Conversation cleared.", modelID))
 		m.updateViewport()
 		return m, nil
 	}
@@ -614,22 +577,14 @@ func (m model) handleModelCommand(modelID string) (tea.Model, tea.Cmd) {
 // handleProviderCommand lists or switches providers
 func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
 	if m.agent == nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: "Agent not initialized.",
-			time:    time.Now(),
-		})
+		m.addError("Agent not initialized.")
 		m.updateViewport()
 		return m, nil
 	}
 
 	manager, err := getAuthManager()
 	if err != nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Failed to load auth manager: %v", err),
-			time:    time.Now(),
-		})
+		m.addErrorf("Failed to load auth manager: %v", err)
 		m.updateViewport()
 		return m, nil
 	}
@@ -654,43 +609,27 @@ func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
 		}
 		builder.WriteString(fmt.Sprintf("\nCurrent: %s\nDefault: %s\nUse /provider <id> to switch.", current, defaultProvider))
 
-		m.messages = append(m.messages, chatMessage{
-			kind:    "system",
-			content: builder.String(),
-			time:    time.Now(),
-		})
+		m.addSystem(builder.String())
 		m.updateViewport()
 		return m, nil
 	}
 
 	target := llm.ProviderID(strings.ToLower(providerID))
 	if !manager.HasCredential(target) {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Provider %s is not connected. Use /auth %s <api_key> or set env var.", target, target),
-			time:    time.Now(),
-		})
+		m.addErrorf("Provider %s is not connected. Use /auth %s <api_key> or set env var.", target, target)
 		m.updateViewport()
 		return m, nil
 	}
 
 	if err := m.agent.SetProvider(target); err != nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Failed to switch provider: %v", err),
-			time:    time.Now(),
-		})
+		m.addErrorf("Failed to switch provider: %v", err)
 		m.updateViewport()
 		return m, nil
 	}
 
 	_ = manager.SetDefaultProvider(target)
 
-	m.messages = append(m.messages, chatMessage{
-		kind:    "system",
-		content: fmt.Sprintf("Switched provider to %s (%s). Conversation cleared.", target, m.agent.ProviderName()),
-		time:    time.Now(),
-	})
+	m.addSystem(fmt.Sprintf("Switched provider to %s (%s). Conversation cleared.", target, m.agent.ProviderName()))
 	m.updateViewport()
 	return m, nil
 }
@@ -698,11 +637,7 @@ func (m model) handleProviderCommand(providerID string) (tea.Model, tea.Cmd) {
 // handleAuthCommand stores an API key for a provider (API-key flows only)
 func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 	if arg == "" {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: "Usage: /auth <provider> <api_key>",
-			time:    time.Now(),
-		})
+		m.addError("Usage: /auth <provider> <api_key>")
 		m.updateViewport()
 		return m, nil
 	}
@@ -720,22 +655,14 @@ func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if !valid {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Unknown provider: %s", target),
-			time:    time.Now(),
-		})
+		m.addErrorf("Unknown provider: %s", target)
 		m.updateViewport()
 		return m, nil
 	}
 
 	// Copilot OAuth not supported in REPL
 	if target == llm.ProviderCopilot {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: "GitHub Copilot requires OAuth. Run: clifi auth connect copilot --oauth",
-			time:    time.Now(),
-		})
+		m.addError("GitHub Copilot requires OAuth. Run: clifi auth connect copilot --oauth")
 		m.updateViewport()
 		return m, nil
 	}
@@ -750,43 +677,27 @@ func (m model) handleAuthCommand(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	if key == "" {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Missing API key. Usage: /auth %s <api_key> or set %s env var.", target, llm.EnvVarForProvider(target)),
-			time:    time.Now(),
-		})
+		m.addErrorf("Missing API key. Usage: /auth %s <api_key> or set %s env var.", target, llm.EnvVarForProvider(target))
 		m.updateViewport()
 		return m, nil
 	}
 
 	manager, err := getAuthManager()
 	if err != nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Failed to load auth manager: %v", err),
-			time:    time.Now(),
-		})
+		m.addErrorf("Failed to load auth manager: %v", err)
 		m.updateViewport()
 		return m, nil
 	}
 
 	if err := manager.SetAPIKey(target, key); err != nil {
-		m.messages = append(m.messages, chatMessage{
-			kind:    "error",
-			content: fmt.Sprintf("Failed to save credential: %v", err),
-			time:    time.Now(),
-		})
+		m.addErrorf("Failed to save credential: %v", err)
 		m.updateViewport()
 		return m, nil
 	}
 
 	_ = manager.SetDefaultProvider(target)
 
-	m.messages = append(m.messages, chatMessage{
-		kind:    "system",
-		content: fmt.Sprintf("Connected provider %s. Use /provider %s to switch.", target, target),
-		time:    time.Now(),
-	})
+	m.addSystem(fmt.Sprintf("Connected provider %s. Use /provider %s to switch.", target, target))
 	m.updateViewport()
 	return m, nil
 }
@@ -836,11 +747,7 @@ func (m model) handleStatusCommand() (tea.Model, tea.Cmd) {
 	builder.WriteString(fmt.Sprintf("- Wallets: %s\n", walletLine))
 	builder.WriteString("Use /provider <id> to switch; /model to change model.")
 
-	m.messages = append(m.messages, chatMessage{
-		kind:    "system",
-		content: builder.String(),
-		time:    time.Now(),
-	})
+	m.addSystem(builder.String())
 	m.updateViewport()
 	return m, nil
 }
