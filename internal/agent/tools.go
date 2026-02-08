@@ -179,40 +179,30 @@ func (tr *ToolRegistry) handleGetBalances(ctx context.Context, input json.RawMes
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	var results []string
+	lines := make([]string, 0, len(params.Chains))
 
+	table := &UITable{
+		Title:   fmt.Sprintf("Balances for %s", params.Address),
+		Headers: []string{"Chain", "Balance"},
+		Rows:    make([][]string, 0, len(params.Chains)),
+	}
 	for _, chainName := range params.Chains {
 		balance, err := tr.chainClient.GetNativeBalance(ctx, chainName, address)
 		if err != nil {
-			results = append(results, fmt.Sprintf("%s: error - %v", chainName, err))
+			val := fmt.Sprintf("error - %v", err)
+			lines = append(lines, fmt.Sprintf("%s: %s", chainName, val))
+			table.Rows = append(table.Rows, []string{chainName, val})
 			continue
 		}
 
 		formatted := chain.FormatBalance(balance.Balance, balance.Decimals)
-		results = append(results, fmt.Sprintf("%s: %s %s", chainName, formatted, balance.Symbol))
+		val := fmt.Sprintf("%s %s", formatted, balance.Symbol)
+		lines = append(lines, fmt.Sprintf("%s: %s", chainName, val))
+		table.Rows = append(table.Rows, []string{chainName, val})
 	}
 
-	text := fmt.Sprintf("Balances for %s:\n%s", params.Address, strings.Join(results, "\n"))
-	block := UIBlock{
-		Kind: UIBlockTable,
-		Table: &UITable{
-			Title:   fmt.Sprintf("Balances for %s", params.Address),
-			Headers: []string{"Chain", "Balance"},
-			Rows:    make([][]string, 0, len(results)),
-		},
-	}
-	for _, line := range results {
-		// line is either "<chain>: <value>" or "<chain>: error - <err>"
-		parts := strings.SplitN(line, ":", 2)
-		chain := strings.TrimSpace(parts[0])
-		val := ""
-		if len(parts) == 2 {
-			val = strings.TrimSpace(parts[1])
-		}
-		block.Table.Rows = append(block.Table.Rows, []string{chain, val})
-	}
-
-	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+	text := fmt.Sprintf("Balances for %s:\n%s", params.Address, strings.Join(lines, "\n"))
+	return ToolOutput{Text: text, Blocks: []UIBlock{{Kind: UIBlockTable, Table: table}}}, nil
 }
 
 type getTokenBalanceInput struct {
@@ -245,20 +235,13 @@ func (tr *ToolRegistry) handleGetTokenBalance(ctx context.Context, input json.Ra
 
 	formatted := chain.FormatBalance(balance.Balance, balance.Decimals)
 	text := fmt.Sprintf("Token balance on %s:\n%s %s (%s)", params.Chain, formatted, balance.Symbol, balance.Name)
-	block := UIBlock{
-		Kind: UIBlockKV,
-		KV: &UIKV{
-			Title: "Token balance",
-			Items: []KVItem{
-				{Key: "Chain", Value: params.Chain},
-				{Key: "Wallet", Value: params.Address},
-				{Key: "Token", Value: params.Token},
-				{Key: "Balance", Value: formatted + " " + balance.Symbol},
-				{Key: "Name", Value: balance.Name},
-			},
-		},
-	}
-	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+	return ToolOutput{Text: text, Blocks: []UIBlock{kvBlock("Token balance",
+		KVItem{Key: "Chain", Value: params.Chain},
+		KVItem{Key: "Wallet", Value: params.Address},
+		KVItem{Key: "Token", Value: params.Token},
+		KVItem{Key: "Balance", Value: formatted + " " + balance.Symbol},
+		KVItem{Key: "Name", Value: balance.Name},
+	)}}, nil
 }
 
 func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
@@ -272,20 +255,17 @@ func (tr *ToolRegistry) handleListWallets(ctx context.Context, input json.RawMes
 		return ToolOutput{Text: "No wallets found. Use 'clifi wallet create' to create one."}, nil
 	}
 
-	var results []string
-	for i, acc := range accounts {
-		results = append(results, fmt.Sprintf("%d. %s", i+1, acc.Address.Hex()))
-	}
-
-	text := fmt.Sprintf("Found %d wallet(s):\n%s", len(accounts), strings.Join(results, "\n"))
 	table := &UITable{
 		Title:   fmt.Sprintf("Wallets (%d)", len(accounts)),
 		Headers: []string{"#", "Address"},
 		Rows:    make([][]string, 0, len(accounts)),
 	}
+	results := make([]string, 0, len(accounts))
 	for i, acc := range accounts {
+		results = append(results, fmt.Sprintf("%d. %s", i+1, acc.Address.Hex()))
 		table.Rows = append(table.Rows, []string{fmt.Sprintf("%d", i+1), acc.Address.Hex()})
 	}
+	text := fmt.Sprintf("Found %d wallet(s):\n%s", len(accounts), strings.Join(results, "\n"))
 	return ToolOutput{Text: text, Blocks: []UIBlock{{Kind: UIBlockTable, Table: table}}}, nil
 }
 
@@ -317,58 +297,41 @@ Testnet: %v`,
 		config.ExplorerURL,
 		config.IsTestnet,
 	)
-
-	block := UIBlock{
-		Kind: UIBlockKV,
-		KV: &UIKV{
-			Title: "Chain info",
-			Items: []KVItem{
-				{Key: "Chain", Value: params.Chain},
-				{Key: "Name", Value: config.Name},
-				{Key: "Chain ID", Value: config.ChainID.String()},
-				{Key: "Native", Value: config.NativeCurrency},
-				{Key: "Explorer", Value: config.ExplorerURL},
-				{Key: "Testnet", Value: fmt.Sprintf("%v", config.IsTestnet)},
-			},
-		},
-	}
-	return ToolOutput{Text: text, Blocks: []UIBlock{block}}, nil
+	return ToolOutput{Text: text, Blocks: []UIBlock{kvBlock("Chain info",
+		KVItem{Key: "Chain", Value: params.Chain},
+		KVItem{Key: "Name", Value: config.Name},
+		KVItem{Key: "Chain ID", Value: config.ChainID.String()},
+		KVItem{Key: "Native", Value: config.NativeCurrency},
+		KVItem{Key: "Explorer", Value: config.ExplorerURL},
+		KVItem{Key: "Testnet", Value: fmt.Sprintf("%v", config.IsTestnet)},
+	)}}, nil
 }
 
 func (tr *ToolRegistry) handleListChains(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
 	chains := tr.chainClient.ListChains()
 
-	var mainnetChains, testnetChains []string
-	for _, name := range chains {
-		config, _ := tr.chainClient.GetChainConfig(name)
-		if config != nil {
-			entry := fmt.Sprintf("- %s (%s, Chain ID: %s)", name, config.Name, config.ChainID.String())
-			if config.IsTestnet {
-				testnetChains = append(testnetChains, entry)
-			} else {
-				mainnetChains = append(mainnetChains, entry)
-			}
-		}
-	}
-
-	result := "Supported Chains:\n\nMainnets:\n" + strings.Join(mainnetChains, "\n")
-	if len(testnetChains) > 0 {
-		result += "\n\nTestnets:\n" + strings.Join(testnetChains, "\n")
-	}
-
 	mainTable := &UITable{Title: "Mainnets", Headers: []string{"Chain", "Name", "Chain ID"}, Rows: [][]string{}}
 	testTable := &UITable{Title: "Testnets", Headers: []string{"Chain", "Name", "Chain ID"}, Rows: [][]string{}}
+	mainLines, testLines := []string{}, []string{}
 	for _, name := range chains {
 		cfg, _ := tr.chainClient.GetChainConfig(name)
 		if cfg == nil {
 			continue
 		}
+		entry := fmt.Sprintf("- %s (%s, Chain ID: %s)", name, cfg.Name, cfg.ChainID.String())
 		row := []string{name, cfg.Name, cfg.ChainID.String()}
 		if cfg.IsTestnet {
+			testLines = append(testLines, entry)
 			testTable.Rows = append(testTable.Rows, row)
 		} else {
+			mainLines = append(mainLines, entry)
 			mainTable.Rows = append(mainTable.Rows, row)
 		}
+	}
+
+	result := "Supported Chains:\n\nMainnets:\n" + strings.Join(mainLines, "\n")
+	if len(testLines) > 0 {
+		result += "\n\nTestnets:\n" + strings.Join(testLines, "\n")
 	}
 	blocks := []UIBlock{{Kind: UIBlockTable, Table: mainTable}}
 	if len(testTable.Rows) > 0 {
